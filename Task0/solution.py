@@ -42,32 +42,36 @@ def log_posterior_probs(x):
     """
     assert x.ndim == 1
 
-    # TODO: enter your code here
+    normal_prior = 0.35
+    laplace_prior = 0.25
+    student_prior = 0.4
 
-    w1 = 0.35
-    w2 = 0.25
-    w3 = 0.4
+    normal_likelihood = 0
+    laplace_likelihood = 0
+    student_likelihood = 0
 
-    denom_max = 0
-    normal_c = 0
-    laplace_c = 0
-    student_c = 0
     for point in x:
-        normal_prob = norm.pdf(point,0,np.sqrt(2))*w1
-        laplace_prob = laplace.pdf(point,0,1)*w2
-        student_prob = t.pdf(point,4)*w3
+        normal_prob = norm.pdf(point, 0, np.sqrt(2))
+        laplace_prob = laplace.pdf(point, 0, 1)
+        student_prob = t.pdf(point, 4)
 
-        denom = normal_prob+laplace_prob+student_prob
-        denom_max+=denom
+        normal_likelihood = normal_likelihood + np.log(normal_prob)
+        laplace_likelihood = laplace_likelihood + np.log(laplace_prob)
+        student_likelihood = student_likelihood + np.log(student_prob)
 
+    evidence = logsumexp(
+        [
+            np.log(normal_prior) + normal_likelihood,
+            np.log(laplace_prior) + laplace_likelihood,
+            np.log(student_prior) + student_likelihood
+        ]
+    )
 
-        laplace_c += laplace_prob
-        normal_c += normal_prob
-        student_c += student_prob
-
-    p = [normal_c/denom_max, laplace_c/denom_max, student_c/denom_max]
-    log_p = np.log(p)
-    print(p)
+    nominators = np.array([normal_likelihood + np.log(normal_prior),
+                           laplace_likelihood + np.log(laplace_prior),
+                           student_likelihood + np.log(student_prior)
+                           ])
+    log_p = nominators - evidence
 
     assert log_p.shape == (3,)
     return log_p
