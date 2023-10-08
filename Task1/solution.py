@@ -1,12 +1,10 @@
 import os
 import typing
+
 from sklearn.gaussian_process.kernels import *
-from sklearn.kernel_ridge import KernelRidge
 import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
 import matplotlib.pyplot as plt
-from matplotlib import cm
-
 
 # Set `EXTENDED_EVALUATION` to `True` in order to visualize your predictions.
 EXTENDED_EVALUATION = False
@@ -32,12 +30,18 @@ class Model(object):
         self.rng = np.random.default_rng(seed=0)
 
         # TODO: Add custom initialization for your model here if necessary
-
         # Gaussian (RBF) kernel:
-        self.kernel = RBF(length_scale=1.0, length_scale_bounds=(1e-2, 1e2))
+        self.kernel = ConstantKernel(20) \
+                      + ConstantKernel(5) \
+                      * Exponentiation(RBF(), 3) \
+                      + Exponentiation(WhiteKernel(10), 3)
 
         # GP initialization:
-        self.gaussian_process = GaussianProcessRegressor(kernel = self.kernel, n_restarts_optimizer = 9)
+        self.regressor = GaussianProcessRegressor(kernel=self.kernel, alpha=40, n_restarts_optimizer=5)
+
+    def calculate_optimal_residential_threshold(self, mean: int, std: int):
+        # TODO find optimal threshold
+        return mean + 2 * std
 
     def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> typing.Tuple[
         np.ndarray, np.ndarray, np.ndarray]:
@@ -50,15 +54,18 @@ class Model(object):
             containing your predictions, the GP posterior mean, and the GP posterior stddev (in that order)
         """
 
-        # TODO: Use your GP to estimate the posterior mean and stddev for each city_area here
-        gp_mean = np.zeros(test_x_2D.shape[0], dtype=float)
-        gp_std = np.zeros(test_x_2D.shape[0], dtype=float)
-
         # TODO: Use the GP posterior to form your predictions here
-        gp_mean, gp_std = self.gaussian_process.predict(test_x_2D, return_std=True)
-        predictions = gp_mean
+        gp_mean, gp_std = self.regressor.predict(test_x_2D, return_std=True)
 
-        return predictions, gp_mean, gp_std
+        preds = np.zeros(shape=(len(gp_mean, )))
+        for idx in range(len(gp_mean)):
+            is_residential = test_x_AREA[idx]
+            pred = gp_mean[idx]
+            if is_residential:
+                pred = self.calculate_optimal_residential_threshold(gp_mean[idx], gp_std[idx])
+            preds[idx] = pred
+
+        return preds, gp_mean, gp_std
 
     def fitting_model(self, train_y: np.ndarray, train_x_2D: np.ndarray):
         """
@@ -66,9 +73,12 @@ class Model(object):
         :param train_x_2D: Training features as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
         :param train_y: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES,)
         """
+        SUBSAMPLE_SIZE = 2000
+        indices = np.random.randint(0, len(train_y), SUBSAMPLE_SIZE)
 
-        # TODO: Fit your model here
-        self.gaussian_process.fit(train_x_2D, train_y)
+        x_train, y_train = train_x_2D[indices], train_y[indices]
+
+        self.regressor.fit(x_train, y_train)
 
         return
 
@@ -199,6 +209,18 @@ def extract_city_area_information(train_x: np.ndarray, test_x: np.ndarray) -> ty
     return train_x_2D, train_x_AREA, test_x_2D, test_x_AREA
 
 
+def calc_score(predictions):
+    y_true = np.fromfile('test_y.byte')
+
+    loss = 0
+    for idx in range(len(y_true)):
+        true = y_true[idx]
+        pred = predictions[idx]
+        factor = 1 if true > pred else 50
+        loss += (true - pred) ** 2 * factor
+    return loss
+
+
 # you don't have to change this function
 def main():
     # Load the training dateset and test features
@@ -215,7 +237,7 @@ def main():
 
     # Predict on the test features
     print('Predicting on test features')
-    predictions = model.make_predictions(test_x_2D, test_x_AREA)
+    predictions, mean, std = model.make_predictions(test_x_2D, test_x_AREA)
     print(predictions)
 
     if EXTENDED_EVALUATION:
