@@ -1,6 +1,7 @@
 import os
 import typing
 from sklearn.gaussian_process.kernels import *
+from sklearn.kernel_ridge import KernelRidge
 import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
 import matplotlib.pyplot as plt
@@ -32,6 +33,12 @@ class Model(object):
 
         # TODO: Add custom initialization for your model here if necessary
 
+        # Gaussian (RBF) kernel:
+        self.kernel = RBF(length_scale=1.0, length_scale_bounds=(1e-2, 1e2))
+
+        # GP initialization:
+        self.gaussian_process = GaussianProcessRegressor(kernel = self.kernel, n_restarts_optimizer = 9)
+
     def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> typing.Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Predict the pollution concentration for a given set of city_areas.
@@ -47,11 +54,12 @@ class Model(object):
         gp_std = np.zeros(test_x_2D.shape[0], dtype=float)
 
         # TODO: Use the GP posterior to form your predictions here
+        gp_mean, gp_std = self.gaussian_process.predict(test_x_2D, return_std=True)
         predictions = gp_mean
 
         return predictions, gp_mean, gp_std
 
-    def fitting_model(self, train_y: np.ndarray,train_x_2D: np.ndarray):
+    def fitting_model(self, train_y: np.ndarray, train_x_2D: np.ndarray):
         """
         Fit your model on the given training data.
         :param train_x_2D: Training features as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
@@ -59,7 +67,9 @@ class Model(object):
         """
 
         # TODO: Fit your model here
-        pass
+        self.gaussian_process.fit(train_x_2D, train_y)
+
+        return
 
 # You don't have to change this function
 def cost_function(ground_truth: np.ndarray, predictions: np.ndarray, AREA_idxs: np.ndarray) -> float:
