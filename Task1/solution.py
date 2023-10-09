@@ -40,7 +40,7 @@ class Model(object):
 
     def calculate_optimal_residential_threshold(self, mean: int, std: int):
         # TODO find optimal threshold
-        return mean + 1.75 * std
+        return mean + 0.7 * std
 
     def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> typing.Tuple[
         np.ndarray, np.ndarray, np.ndarray]:
@@ -72,7 +72,7 @@ class Model(object):
         :param train_x_2D: Training features as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
         :param train_y: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES,)
         """
-        SUBSAMPLE_SIZE = 2000
+        SUBSAMPLE_SIZE = 4000
         indices = np.random.randint(0, len(train_y), SUBSAMPLE_SIZE)
 
         x_train, y_train = train_x_2D[indices], train_y[indices]
