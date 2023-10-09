@@ -31,17 +31,16 @@ class Model(object):
 
         # TODO: Add custom initialization for your model here if necessary
         # Gaussian (RBF) kernel:
-        self.kernel = ConstantKernel(20) \
-                      + ConstantKernel(5) \
-                      * Exponentiation(RBF(), 3) \
-                      + Exponentiation(WhiteKernel(10), 3)
+        self.kernel = ConstantKernel(0.5) \
+                      * Matern(nu=1.5, length_scale=0.5) \
+                      + WhiteKernel(3)
 
         # GP initialization:
-        self.regressor = GaussianProcessRegressor(kernel=self.kernel, alpha=40, n_restarts_optimizer=5)
+        self.regressor = GaussianProcessRegressor(kernel=self.kernel, n_restarts_optimizer=5, random_state=0)
 
     def calculate_optimal_residential_threshold(self, mean: int, std: int):
         # TODO find optimal threshold
-        return mean + 2 * std
+        return mean + 1.75 * std
 
     def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> typing.Tuple[
         np.ndarray, np.ndarray, np.ndarray]:
@@ -246,3 +245,15 @@ def main():
 
 if __name__ == "__main__":
     main()
+    exit()
+    import pandas as pd
+    x = pd.read_csv('train_x.csv')
+    x = x.reset_index()
+    x.columns = ['lon', 'lat', 'is_residental']
+    y = pd.read_csv('train_y.csv')
+    xy = pd.concat([x, y], axis=1)
+    import plotly.express as px
+
+    fig = px.scatter_3d(xy, x='lon', y='lat', z='pm25',
+                        color='pm25')
+    fig.show()
