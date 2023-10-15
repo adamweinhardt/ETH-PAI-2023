@@ -5,6 +5,7 @@ from sklearn.gaussian_process.kernels import *
 import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
 import matplotlib.pyplot as plt
+import GPy
 
 # Set `EXTENDED_EVALUATION` to `True` in order to visualize your predictions.
 EXTENDED_EVALUATION = False
@@ -30,13 +31,38 @@ class Model(object):
         self.rng = np.random.default_rng(seed=0)
 
         # TODO: Add custom initialization for your model here if necessary
-        # Gaussian (RBF) kernel:
-        self.kernel = ConstantKernel(0.5) \
-                      * Matern(nu=1.5, length_scale=0.5) \
-                      + WhiteKernel(3)
+        self.kernel_sigma = 1 
+        self.lenght_scale = 1
+        self.kernel_bounds = (1e-4, 1e-4) #default:(1e-5, 1e-5)
+
+        # Constant kernel:
+        self.Constant_kernel = self.kernel_sigma * ConstantKernel(constant_value = 1.0, constant_value_bounds = (1e-5, 10))
+
+        # RBF (Gaussian, Squared Exponential) kernel:
+        self.RBF_kernel = self.kernel_sigma * RBF(length_scale = self.lenght_scale, length_scale_bounds = self.kernel_bounds)
+
+        self.RBF_kernel_GPy = GPy.kern.RBF(input_dim=1)
+
+        # Matérn kernel: smaller the nu, less smooth the function is
+        self.Matern_kernel = self.kernel_sigma * Matern(nu = 1.5, length_scale = self.lenght_scale, length_scale_bounds = self.kernel_bounds)
+        
+        # Rational Quadratic kernel: alpha is the Scale mixture parameter
+        self.Rational_Quadratic_kernel = self.kernel_sigma * RationalQuadratic(alpha = 1, length_scale = self.lenght_scale, 
+                                                               length_scale_bounds = (1e-5, 1e-5), alpha_bounds = (1e-5, 1e-5))
+        
+        # Exp-Sine-Squared kernel:
+        self.Exp_Sine_Squared_kernel = self.kernel_sigma * ExpSineSquared(length_scale = self.lenght_scale, periodicity = 1,
+                                                            length_scale_bounds = (1e-5, 1e-5), periodicity_bounds = (1e-5, 1e-5))
+        
+        # Dot-Product kernel:
+        self.Dot_Product_kernel = self.kernel_sigma * DotProduct(sigma_0 = 1, sigma_0_bounds = (1e-5, 1e-5))
+
+        # Kernel choosing:
+        self.kernel =  (self.RBF_kernel)
 
         # GP initialization:
-        self.regressor = GaussianProcessRegressor(kernel=self.kernel, n_restarts_optimizer=5, random_state=0)
+        self.regressor = GaussianProcessRegressor(kernel = self.kernel, optimizer = "fmin_l_bfgs_b", 
+                                                  n_restarts_optimizer = 10)
 
     def calculate_optimal_residential_threshold(self, mean: int, std: int):
         # TODO find optimal threshold
@@ -54,7 +80,9 @@ class Model(object):
         """
 
         # TODO: Use the GP posterior to form your predictions here
-        gp_mean, gp_std = self.regressor.predict(test_x_2D, return_std=True)
+        #gp_mean, gp_std = self.regressor.predict(test_x_2D, return_std=True)
+
+        gp_mean, gp_std = self.GPy_model.predict(test_x_2D)
 
         preds = np.zeros(shape=(len(gp_mean, )))
         for idx in range(len(gp_mean)):
@@ -72,12 +100,23 @@ class Model(object):
         :param train_x_2D: Training features as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
         :param train_y: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES,)
         """
-        SUBSAMPLE_SIZE = 4000
-        indices = np.random.randint(0, len(train_y), SUBSAMPLE_SIZE)
+        #SUBSAMPLE_SIZE = 1000
+        #indices = np.random.randint(0, len(train_y), SUBSAMPLE_SIZE)
 
-        x_train, y_train = train_x_2D[indices], train_y[indices]
+        #x_train, y_train = train_x_2D[indices], train_y[indices]
 
-        self.regressor.fit(x_train, y_train)
+        #self.regressor.fit(x_train, y_train)
+
+        self.GPy_kernel = GPy.kern.Matern52(input_dim=2, variance=10, lengthscale=1.0) + GPy.kern.White(input_dim=2, variance=1)
+
+        y_train = np.reshape(train_y,(-1,1))
+        inducing_points = train_x_2D[::100]
+
+        model = GPy.models.SparseGPRegression(train_x_2D, y_train, self.GPy_kernel, inducing_points)
+        model.inference_method = GPy.inference.latent_function_inference.FITC()
+        model.optimize()
+
+        self.GPy_model = model
 
         return
 
@@ -181,6 +220,7 @@ def perform_extended_evaluation(model: Model, output_dir: str = '/results'):
 
     # Save figure to pdf
     figure_path = os.path.join(output_dir, 'extended_evaluation.pdf')
+    print(figure_path)
     fig.savefig(figure_path)
     print(f'Saved extended evaluation to {figure_path}')
 
@@ -208,18 +248,6 @@ def extract_city_area_information(train_x: np.ndarray, test_x: np.ndarray) -> ty
     return train_x_2D, train_x_AREA, test_x_2D, test_x_AREA
 
 
-def calc_score(predictions):
-    y_true = np.fromfile('test_y.byte')
-
-    loss = 0
-    for idx in range(len(y_true)):
-        true = y_true[idx]
-        pred = predictions[idx]
-        factor = 1 if true > pred else 50
-        loss += (true - pred) ** 2 * factor
-    return loss
-
-
 # you don't have to change this function
 def main():
     # Load the training dateset and test features
@@ -245,15 +273,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    exit()
-    import pandas as pd
-    x = pd.read_csv('train_x.csv')
-    x = x.reset_index()
-    x.columns = ['lon', 'lat', 'is_residental']
-    y = pd.read_csv('train_y.csv')
-    xy = pd.concat([x, y], axis=1)
-    import plotly.express as px
-
-    fig = px.scatter_3d(xy, x='lon', y='lat', z='pm25',
-                        color='pm25')
-    fig.show()
