@@ -107,14 +107,19 @@ class Model(object):
 
         #self.regressor.fit(x_train, y_train)
 
-        self.GPy_kernel = GPy.kern.Matern52(input_dim=2, variance=10, lengthscale=1.0) + GPy.kern.White(input_dim=2, variance=1)
+        self.Matern52_kernel = GPy.kern.Matern52(input_dim=2, variance=10, lengthscale=1.0) + GPy.kern.White(input_dim=2, variance=1)
+        self.Rational_Quadratic_kernel = GPy.kern.RatQuad(input_dim=2, variance=10, lengthscale=1.0, power=2) + GPy.kern.White(input_dim=2, variance=1)
 
         y_train = np.reshape(train_y,(-1,1))
-        inducing_points = train_x_2D[::100]
 
-        model = GPy.models.SparseGPRegression(train_x_2D, y_train, self.GPy_kernel, inducing_points)
+        x_variance = np.ones_like(train_x_2D)
+
+        #U, sigma, V = np.linalg.svd(train_x_2D)
+        inducing_points = train_x_2D[::10]
+
+        model = GPy.models.SparseGPRegression(X=train_x_2D, Y=y_train, kernel=self.Matern52_kernel, Z=inducing_points)
         model.inference_method = GPy.inference.latent_function_inference.FITC()
-        model.optimize()
+        model.optimize(optimizer="lbfgs", messages=True, max_iters=50)
 
         self.GPy_model = model
 
@@ -261,6 +266,7 @@ def main():
     print('Fitting model')
     model = Model()
     model.fitting_model(train_y, train_x_2D)
+    model.GPy_model.plot_inducing(which_indices=1,projection='2d')
 
     # Predict on the test features
     print('Predicting on test features')
