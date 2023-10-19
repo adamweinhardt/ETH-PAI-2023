@@ -82,7 +82,7 @@ class Model(object):
         # TODO: Use the GP posterior to form your predictions here
         #gp_mean, gp_std = self.regressor.predict(test_x_2D, return_std=True)
 
-        gp_mean, gp_std = self.GPy_model.predict(test_x_2D)
+        gp_mean, gp_std = self.GPy_model.predict(test_x_2D, include_likelihood=False) #False: noiseless prediction
 
         preds = np.zeros(shape=(len(gp_mean, )))
         for idx in range(len(gp_mean)):
@@ -100,26 +100,39 @@ class Model(object):
         :param train_x_2D: Training features as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
         :param train_y: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES,)
         """
-        #SUBSAMPLE_SIZE = 1000
-        #indices = np.random.randint(0, len(train_y), SUBSAMPLE_SIZE)
 
-        #x_train, y_train = train_x_2D[indices], train_y[indices]
-
-        #self.regressor.fit(x_train, y_train)
-
-        self.Matern52_kernel = GPy.kern.Matern52(input_dim=2, variance=10, lengthscale=1.0) + GPy.kern.White(input_dim=2, variance=1)
+        self.Matern52_kernel = GPy.kern.Matern52(input_dim=2, variance=10, lengthscale=1) + GPy.kern.White(input_dim=2, variance=1)
         self.Rational_Quadratic_kernel = GPy.kern.RatQuad(input_dim=2, variance=10, lengthscale=1.0, power=2) + GPy.kern.White(input_dim=2, variance=1)
 
         y_train = np.reshape(train_y,(-1,1))
 
-        x_variance = np.ones_like(train_x_2D)
+        r = 1519 #10th of the dataset
 
-        #U, sigma, V = np.linalg.svd(train_x_2D)
-        inducing_points = train_x_2D[::10]
+        U, sigma, V = np.linalg.svd(train_x_2D, full_matrices=False)
+
+        S = np.array([[sigma[0], 0],
+                      [0, sigma[1]]])
+        
+        inducing_points_2 = train_x_2D[::10]
+
+        inducing_points = np.dot(np.dot(U,S),V)
+        inducing_points = inducing_points[0:r,:]
+        print(np.shape(inducing_points_2))
 
         model = GPy.models.SparseGPRegression(X=train_x_2D, Y=y_train, kernel=self.Matern52_kernel, Z=inducing_points)
         model.inference_method = GPy.inference.latent_function_inference.FITC()
-        model.optimize(optimizer="lbfgs", messages=True, max_iters=50)
+        model.optimize(optimizer="lbfgs", messages=True, max_iters=100)
+
+        # Plot the actual predictions
+        fig = plt.figure()
+        plt.plot(inducing_points)
+        plt.plot(train_x_2D)
+        plt.legend(["Inducing points", "Training points"])
+
+        # Save figure to pdf
+        fig.savefig("training_plot.png")
+
+        plt.show()
 
         self.GPy_model = model
 
