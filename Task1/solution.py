@@ -1,13 +1,18 @@
+import datetime
+import logging
 import os
 import typing
+from datetime import time
 
 from sklearn.gaussian_process.kernels import *
 import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
 import matplotlib.pyplot as plt
-import GPy
+
 
 # Set `EXTENDED_EVALUATION` to `True` in order to visualize your predictions.
+from sklearn.model_selection import train_test_split
+
 EXTENDED_EVALUATION = False
 EVALUATION_GRID_POINTS = 300  # Number of grid points used in extended evaluation
 
@@ -15,7 +20,19 @@ EVALUATION_GRID_POINTS = 300  # Number of grid points used in extended evaluatio
 COST_W_UNDERPREDICT = 50.0
 COST_W_NORMAL = 1.0
 
+import subprocess
+import sys
 
+def install(package):
+    from subprocess import check_output, STDOUT, CalledProcessError
+
+    try:
+        output = check_output([sys.executable, "-m", "pip", "install", package], stderr=STDOUT)
+    except CalledProcessError as exc:
+        print(exc.output)
+
+install('GPy')
+import GPy
 class Model(object):
     """
     Model for this task.
@@ -28,7 +45,7 @@ class Model(object):
         Initialize your model here.
         We already provide a random number generator for reproducibility.
         """
-        self.rng = np.random.default_rng(seed=0)
+        self.rng = np.random.seed(0)
 
         # TODO: Add custom initialization for your model here if necessary
         self.kernel_sigma = 1 
@@ -62,7 +79,7 @@ class Model(object):
 
         # GP initialization:
         self.regressor = GaussianProcessRegressor(kernel = self.kernel, optimizer = "fmin_l_bfgs_b", 
-                                                  n_restarts_optimizer = 10)
+                                                  n_restarts_optimizer = 1)
 
     def calculate_optimal_residential_threshold(self, mean: int, std: int):
         # TODO find optimal threshold
@@ -82,7 +99,7 @@ class Model(object):
         # TODO: Use the GP posterior to form your predictions here
         #gp_mean, gp_std = self.regressor.predict(test_x_2D, return_std=True)
 
-        gp_mean, gp_std = self.GPy_model.predict(test_x_2D)
+        gp_mean, gp_std = self.GPy_model.predict(test_x_2D, include_likelihood=False)
 
         preds = np.zeros(shape=(len(gp_mean, )))
         for idx in range(len(gp_mean)):
@@ -106,7 +123,6 @@ class Model(object):
         #x_train, y_train = train_x_2D[indices], train_y[indices]
 
         #self.regressor.fit(x_train, y_train)
-
         self.Matern52_kernel = GPy.kern.Matern52(input_dim=2, variance=10, lengthscale=1.0) + GPy.kern.White(input_dim=2, variance=1)
         self.Rational_Quadratic_kernel = GPy.kern.RatQuad(input_dim=2, variance=10, lengthscale=1.0, power=2) + GPy.kern.White(input_dim=2, variance=1)
 
@@ -253,6 +269,31 @@ def extract_city_area_information(train_x: np.ndarray, test_x: np.ndarray) -> ty
     return train_x_2D, train_x_AREA, test_x_2D, test_x_AREA
 
 
+def validate(model, valid_x_2D, valid_x_AREA, valid_y):
+
+    predictions, mean, std = model.make_predictions(valid_x_2D, valid_x_AREA)
+
+    loss = 0
+
+    for idx in range(len(valid_y)):
+        pred = predictions[idx]
+        truth = valid_y[idx]
+
+        loss_weight = 50 if pred < truth and valid_x_AREA[idx] else 1
+
+        loss += loss_weight*(pred-truth)**2
+
+    loss /= len(valid_y)
+    of = f'validation_loss_{str(datetime.datetime.now())}.txt'
+
+    with open(of, 'w+') as f:
+        f.writelines(['loss: '+str(loss)])
+    logging.warning("HELLO")
+    print('cleaner is up', flush=True)
+    print(f'VALIDATION loss: written to {of}')
+
+
+
 # you don't have to change this function
 def main():
     # Load the training dateset and test features
@@ -260,15 +301,20 @@ def main():
     train_y = np.loadtxt('train_y.csv', delimiter=',', skiprows=1)
     test_x = np.loadtxt('test_x.csv', delimiter=',', skiprows=1)
 
+    train_x, valid_x, train_y, valid_y = train_test_split(train_x, train_y, test_size=0.2)
+
     # Extract the city_area information
+    valid_x_2D, valid_x_AREA, _, _ = extract_city_area_information(valid_x, test_x)
     train_x_2D, train_x_AREA, test_x_2D, test_x_AREA = extract_city_area_information(train_x, test_x)
     # Fit the model
     print('Fitting model')
     model = Model()
     model.fitting_model(train_y, train_x_2D)
-    model.GPy_model.plot_inducing(which_indices=1,projection='2d')
-
     # Predict on the test features
+
+    print('Validating')
+    validate(model, valid_x_2D, valid_x_AREA, valid_y)
+
     print('Predicting on test features')
     predictions, mean, std = model.make_predictions(test_x_2D, test_x_AREA)
     print(predictions)
