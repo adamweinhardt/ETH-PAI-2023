@@ -190,18 +190,18 @@ class SWAGInference(object):
             # TODO(1): update SWAG-diagonal attributes for weight `name` using `current_params` and `param`
             #raise NotImplementedError("Update SWAG-diagonal statistics")
 
-        # Full SWAG
-        if self.inference_mode == InferenceMode.SWAG_FULL:
+            # Full SWAG
+            if self.inference_mode == InferenceMode.SWAG_FULL:
             # TODO(2): update full SWAG attributes for weight `name` using `current_params` and `param`
-            self.theta_running_mean[name] *= (self.current_epoch-1)
-            self.theta_running_mean[name] += param
-            self.theta_running_mean[name] /= self.current_epoch
+                self.theta_running_mean[name] *= (self.current_epoch-1)
+                self.theta_running_mean[name] += param
+                self.theta_running_mean[name] /= self.current_epoch
 
-            deviation_matrix= param - self.theta_running_mean[name]
+                deviation_matrix= param - self.theta_running_mean[name]
 
-            #sigma_low_rank = 1/(self.deviation_matrix_max_rank-1) * torch.pow(deviation_matrix,2)
+                #sigma_low_rank = 1/(self.deviation_matrix_max_rank-1) * torch.pow(deviation_matrix,2)
 
-            self.deviation_matricies[name].append(deviation_matrix)
+                self.deviation_matricies[name].append(deviation_matrix)
 
     def fit_swag(self, loader: torch.utils.data.DataLoader) -> None:
         """
@@ -238,6 +238,7 @@ class SWAGInference(object):
         with tqdm.trange(self.swag_epochs, desc="Running gradient descent for SWA") as pbar:
             pbar_dict = {}
             for epoch in pbar:
+                self.current_epoch += 1
                 average_loss = 0.0
                 average_accuracy = 0.0
                 num_samples_processed = 0
@@ -363,13 +364,11 @@ class SWAGInference(object):
             # Full SWAG part
             if self.inference_mode == InferenceMode.SWAG_FULL:
                 # TODO(2): Sample parameter values for full SWAG
-                D = torch.concat(list(self.deviation_matricies[name]),dim=1)
-                z_2 = torch.randn((D.shape[0],))
-                cov = D.t().matmul(z_2)
-                
-                cov *= 1/((self.deviation_matrix_max_rank-1)**0.5)
+                D = torch.concat(list(self.deviation_matricies[name]), dim=0)
+                z_2 = torch.rand_like(param)
+                cov = D.matmul(z_2)
 
-                sampled_param = current_mean + (var+cov)/ torch.sqrt(2)
+                sampled_param = current_mean + var * z_1 / torch.sqrt(2) + cov / (torch.sqrt(2*(self.deviation_matrix_max_rank-1)))
 
             # Modify weight value in-place; directly changing self.network
             param.data = sampled_param
