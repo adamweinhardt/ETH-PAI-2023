@@ -9,6 +9,7 @@ import torch.optim
 import torch.nn.functional as F
 import torch.utils.data
 import tqdm
+from collections import deque
 from matplotlib import pyplot as plt
 
 from util import draw_reliability_diagram, cost_function, setup_seeds, calc_calibration_curve
@@ -111,13 +112,13 @@ class SWAGInference(object):
         model_dir: pathlib.Path,
         # TODO(1): change inference_mode to InferenceMode.SWAG_DIAGONAL check:)
         # TODO(2): change inference_mode to InferenceMode.SWAG_FULL
-        inference_mode: InferenceMode = InferenceMode.SWAG_DIAGONAL,
+        inference_mode: InferenceMode = InferenceMode.SWAG_FULL,
         # TODO(2): optionally add/tweak hyperparameters
-        swag_epochs: int = 30, #TODO RESET to 30
+        swag_epochs: int = 3, #TODO RESET to 30
         swag_learning_rate: float = 0.045,
         swag_update_freq: int = 1,
-        deviation_matrix_max_rank: int = 15,
-        bma_samples: int = 30, #TODO RESET TO 30
+        deviation_matrix_max_rank: int = 2,
+        bma_samples: int = 3, #TODO RESET TO 30
     ):
         """
         :param train_xs: Training images (for storage only)
@@ -148,9 +149,13 @@ class SWAGInference(object):
         # SWAG-diagonal
         #self.weights_running_sum = self._create_weight_copy()
         #self.weights_running_squared_sum = self._create_weight_copy()
+        self.current_epoch = 0
         self.swag_sigma = self._create_weight_copy()
         self.running_squared_mean = self._create_weight_copy()
         self.swag_theta = self._create_weight_copy()
+
+        self.theta_running_mean = self._create_weight_copy()
+        self.deviation_matricies = self._create_weight_copy_deque()
         # TODO(1): create attributes for SWAG-diagonal
         #  Hint: self._create_weight_copy() creates an all-zero copy of the weights
         #  as a dictionary that maps from weight name to values.
@@ -188,7 +193,15 @@ class SWAGInference(object):
         # Full SWAG
         if self.inference_mode == InferenceMode.SWAG_FULL:
             # TODO(2): update full SWAG attributes for weight `name` using `current_params` and `param`
-            raise NotImplementedError("Update full SWAG statistics")
+            self.theta_running_mean[name] *= (self.current_epoch-1)
+            self.theta_running_mean[name] += param
+            self.theta_running_mean[name] /= self.current_epoch
+
+            deviation_matrix= param - self.theta_running_mean[name]
+
+            #sigma_low_rank = 1/(self.deviation_matrix_max_rank-1) * torch.pow(deviation_matrix,2)
+
+            self.deviation_matricies[name].append(deviation_matrix)
 
     def fit_swag(self, loader: torch.utils.data.DataLoader) -> None:
         """
@@ -342,16 +355,21 @@ class SWAGInference(object):
             # TODO(1): Sample parameter values for SWAG-diagonal
             #raise NotImplementedError("Sample parameter for SWAG-diagonal")
             current_mean = self.swag_theta[name]
-            current_std = torch.sqrt(self.swag_sigma[name])
-            assert current_mean.size() == param.size() and current_std.size() == param.size()
+            var = torch.sqrt(self.swag_sigma[name])
+            assert current_mean.size() == param.size() and var.size() == param.size()
 
             # Diagonal part
-            sampled_param = current_mean + current_std * z_1
+            sampled_param = current_mean + var * z_1
             # Full SWAG part
             if self.inference_mode == InferenceMode.SWAG_FULL:
                 # TODO(2): Sample parameter values for full SWAG
-                raise NotImplementedError("Sample parameter for full SWAG")
-                sampled_param += ...
+                D = torch.concat(list(self.deviation_matricies[name]),dim=1)
+                z_2 = torch.randn((D.shape[0],))
+                cov = D.t().matmul(z_2)
+                
+                cov *= 1/((self.deviation_matrix_max_rank-1)**0.5)
+
+                sampled_param = current_mean + (var+cov)/ torch.sqrt(2)
 
             # Modify weight value in-place; directly changing self.network
             param.data = sampled_param
@@ -391,6 +409,13 @@ class SWAGInference(object):
         """Create an all-zero copy of the network weights as a dictionary that maps name -> weight"""
         return {
             name: torch.zeros_like(param, requires_grad=False)
+            for name, param in self.network.named_parameters()
+        }
+    
+    def _create_weight_copy_deque(self) -> typing.Dict[str, torch.Tensor]:
+        """Create an all-zero copy of the network weights as a dictionary that maps name -> weight"""
+        return {
+            name: deque(maxlen=self.deviation_matrix_max_rank)
             for name, param in self.network.named_parameters()
         }
 
@@ -464,6 +489,7 @@ class SWAGInference(object):
             pbar_dict = {}
             # Perform the specified number of MAP epochs
             for epoch in pbar:
+                self.current_epoch +=1
                 average_loss = 0.0
                 average_accuracy = 0.0
                 num_samples_processed = 0
