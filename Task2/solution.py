@@ -1,7 +1,4 @@
-import abc
-import collections
 import enum
-import math
 import pathlib
 import typing
 import warnings
@@ -30,7 +27,6 @@ this solution always performs MAP inference before running your SWAG implementat
 Note that MAP inference can take a long time.
 """
 
-DEVICE = 'cpu'
 
 def main():
     """raise RuntimeError(
@@ -46,19 +42,19 @@ def main():
     output_dir = pathlib.Path.cwd()
 
     # Load training data
-    train_xs = torch.from_numpy(np.load(data_dir / "train_xs.npz")["train_xs"]).to(DEVICE)
+    train_xs = torch.from_numpy(np.load(data_dir / "train_xs.npz")["train_xs"])
     raw_train_meta = np.load(data_dir / "train_ys.npz")
-    train_ys = torch.from_numpy(raw_train_meta["train_ys"]).to(DEVICE)
-    train_is_snow = torch.from_numpy(raw_train_meta["train_is_snow"]).to(DEVICE)
-    train_is_cloud = torch.from_numpy(raw_train_meta["train_is_cloud"]).to(DEVICE)
+    train_ys = torch.from_numpy(raw_train_meta["train_ys"])
+    train_is_snow = torch.from_numpy(raw_train_meta["train_is_snow"])
+    train_is_cloud = torch.from_numpy(raw_train_meta["train_is_cloud"])
     dataset_train = torch.utils.data.TensorDataset(train_xs, train_is_snow, train_is_cloud, train_ys)
 
     # Load validation data
-    val_xs = torch.from_numpy(np.load(data_dir / "val_xs.npz")["val_xs"]).to(DEVICE)
+    val_xs = torch.from_numpy(np.load(data_dir / "val_xs.npz")["val_xs"])
     raw_val_meta = np.load(data_dir / "val_ys.npz")
-    val_ys = torch.from_numpy(raw_val_meta["val_ys"]).to(DEVICE)
-    val_is_snow = torch.from_numpy(raw_val_meta["val_is_snow"]).to(DEVICE)
-    val_is_cloud = torch.from_numpy(raw_val_meta["val_is_cloud"]).to(DEVICE)
+    val_ys = torch.from_numpy(raw_val_meta["val_ys"])
+    val_is_snow = torch.from_numpy(raw_val_meta["val_is_snow"])
+    val_is_cloud = torch.from_numpy(raw_val_meta["val_is_cloud"])
     dataset_val = torch.utils.data.TensorDataset(val_xs, val_is_snow, val_is_cloud, val_ys)
 
     # Fix all randomness
@@ -117,11 +113,11 @@ class SWAGInference(object):
         # TODO(2): change inference_mode to InferenceMode.SWAG_FULL
         inference_mode: InferenceMode = InferenceMode.SWAG_DIAGONAL,
         # TODO(2): optionally add/tweak hyperparameters
-        swag_epochs: int = 3, #TODO RESET to 30
+        swag_epochs: int = 30, #TODO RESET to 30
         swag_learning_rate: float = 0.045,
         swag_update_freq: int = 1,
         deviation_matrix_max_rank: int = 15,
-        bma_samples: int = 3, #TODO RESET TO 30
+        bma_samples: int = 30, #TODO RESET TO 30
     ):
         """
         :param train_xs: Training images (for storage only)
@@ -144,7 +140,7 @@ class SWAGInference(object):
 
         # Network used to perform SWAG.
         # Note that all operations in this class modify this network IN-PLACE!
-        self.network = CNN(in_channels=3, out_classes=6).to(DEVICE)
+        self.network = CNN(in_channels=3, out_classes=6)
 
         # Store training dataset to recalculate batch normalization statistics during SWAG inference
         self.train_dataset = torch.utils.data.TensorDataset(train_xs)
@@ -153,9 +149,8 @@ class SWAGInference(object):
         #self.weights_running_sum = self._create_weight_copy()
         #self.weights_running_squared_sum = self._create_weight_copy()
         self.swag_sigma = self._create_weight_copy()
-        self.running_squared_sum = self._create_weight_copy()
+        self.running_squared_mean = self._create_weight_copy()
         self.swag_theta = self._create_weight_copy()
-        self.current_epoch = 0
         # TODO(1): create attributes for SWAG-diagonal
         #  Hint: self._create_weight_copy() creates an all-zero copy of the weights
         #  as a dictionary that maps from weight name to values.
@@ -180,16 +175,11 @@ class SWAGInference(object):
 
         # SWAG-diagonal
         for name, param in current_params.items():
-            
-            self.swag_theta[name] = self.swag_theta[name] * max(self.current_epoch-1,1)
-            self.swag_theta[name] += param
-            self.swag_theta[name] /= self.current_epoch
 
-            self.running_squared_sum[name] = self.running_squared_sum[name] * max(self.current_epoch - 1, 1)
-            self.running_squared_sum[name] += param**2
-            self.running_squared_sum[name] /= self.current_epoch
+            self.swag_theta[name] += param/self.swag_epochs
+            self.running_squared_mean[name] += param**2/self.swag_epochs
 
-            variance_of_elements = self.running_squared_sum[name] - self.swag_theta[name]**2
+            variance_of_elements = torch.clamp(self.running_squared_mean[name] - self.swag_theta[name]**2,1e-30)
             self.swag_sigma[name] = variance_of_elements
 
             # TODO(1): update SWAG-diagonal attributes for weight `name` using `current_params` and `param`
@@ -235,7 +225,6 @@ class SWAGInference(object):
         with tqdm.trange(self.swag_epochs, desc="Running gradient descent for SWA") as pbar:
             pbar_dict = {}
             for epoch in pbar:
-                self.current_epoch += 1
                 average_loss = 0.0
                 average_accuracy = 0.0
                 num_samples_processed = 0
@@ -312,8 +301,8 @@ class SWAGInference(object):
             # TODO(1): Perform inference for all samples in `loader` using current model sample,
             #  and add the predictions to per_model_sample_predictions
             batch_preds = []
-            for batch_x in loader:
-                pred_ys = self.network(batch_x[0])
+            for (batch_x,) in loader:
+                pred_ys = self.network(batch_x)
                 batch_preds.append(pred_ys)
 
             all_preds = torch.concat(batch_preds)
@@ -332,9 +321,10 @@ class SWAGInference(object):
         # TODO(1): Average predictions from different model samples into bma_probabilities
         #raise NotImplementedError("Aggregate predictions from model samples")
         #per_model_sample_predictions = [Models, samples, classes]
-        pred_tensor = torch.stack(per_model_sample_predictions)
-        output_means = torch.mean(pred_tensor.float(), dim=0)
-        bma_probabilities = F.softmax(output_means, dim=-1)
+        per_model_sample_predictions = torch.stack(per_model_sample_predictions)
+        bm_probabilities = F.softmax(per_model_sample_predictions, dim=-1)
+        bma_probabilities = torch.mean(bm_probabilities.float(), dim=0)
+
         assert bma_probabilities.dim() == 2 and bma_probabilities.size(1) == 6  # N x C
         return bma_probabilities
 
@@ -348,16 +338,15 @@ class SWAGInference(object):
         # Instead of acting on a full vector of parameters, all operations can be done on per-layer parameters.
         for name, param in self.network.named_parameters():
             # SWAG-diagonal part
-            z_1 = torch.randn(param.size()).to(DEVICE)
+            z_1 = torch.randn(param.size())
             # TODO(1): Sample parameter values for SWAG-diagonal
             #raise NotImplementedError("Sample parameter for SWAG-diagonal")
-            current_mean = self.swag_sigma[name]
-            current_std = self.swag_theta[name]
+            current_mean = self.swag_theta[name]
+            current_std = torch.sqrt(self.swag_sigma[name])
             assert current_mean.size() == param.size() and current_std.size() == param.size()
 
             # Diagonal part
             sampled_param = current_mean + current_std * z_1
-
             # Full SWAG part
             if self.inference_mode == InferenceMode.SWAG_FULL:
                 # TODO(2): Sample parameter values for full SWAG
@@ -401,7 +390,7 @@ class SWAGInference(object):
     def _create_weight_copy(self) -> typing.Dict[str, torch.Tensor]:
         """Create an all-zero copy of the network weights as a dictionary that maps name -> weight"""
         return {
-            name: torch.zeros_like(param, requires_grad=False).to(DEVICE)
+            name: torch.zeros_like(param, requires_grad=False)
             for name, param in self.network.named_parameters()
         }
 
@@ -683,7 +672,7 @@ def evaluate(
     thresholds = [0.0] + list(torch.unique(pred_prob_max, sorted=True))
     costs = []
     for threshold in thresholds:
-        thresholded_ys = torch.where(pred_prob_max <= threshold, -1 * torch.ones_like(pred_ys), pred_ys).to(DEVICE)
+        thresholded_ys = torch.where(pred_prob_max <= threshold, -1 * torch.ones_like(pred_ys), pred_ys)
         costs.append(cost_function(thresholded_ys, ys).item())
     best_idx = np.argmin(costs)
     print(f"Best cost {costs[best_idx]} at threshold {thresholds[best_idx]}")
