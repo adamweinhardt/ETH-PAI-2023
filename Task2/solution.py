@@ -114,11 +114,11 @@ class SWAGInference(object):
         # TODO(2): change inference_mode to InferenceMode.SWAG_FULL
         inference_mode: InferenceMode = InferenceMode.SWAG_FULL,
         # TODO(2): optionally add/tweak hyperparameters
-        swag_epochs: int = 3, #TODO RESET to 30
+        swag_epochs: int = 40, #TODO RESET to 30
         swag_learning_rate: float = 0.045,
         swag_update_freq: int = 1,
-        deviation_matrix_max_rank: int = 2,
-        bma_samples: int = 3, #TODO RESET TO 30
+        deviation_matrix_max_rank: int = 15,
+        bma_samples: int = 30, #TODO RESET TO 30
     ):
         """
         :param train_xs: Training images (for storage only)
@@ -197,7 +197,7 @@ class SWAGInference(object):
                 self.theta_running_mean[name] += param
                 self.theta_running_mean[name] /= self.current_epoch
 
-                deviation_matrix= param - self.theta_running_mean[name]
+                deviation_matrix = param - self.theta_running_mean[name]
 
                 #sigma_low_rank = 1/(self.deviation_matrix_max_rank-1) * torch.pow(deviation_matrix,2)
 
@@ -281,7 +281,7 @@ class SWAGInference(object):
 
         # TODO(1): pick a prediction threshold, either constant or adaptive.
         #  The provided value should suffice to pass the easy baseline.
-        self._prediction_threshold = 2.0 / 3.0
+        self._prediction_threshold = 2.1 / 3.0
 
         # TODO(2): perform additional calibration if desired.
         #  Feel free to remove or change the prediction threshold.
@@ -364,11 +364,15 @@ class SWAGInference(object):
             # Full SWAG part
             if self.inference_mode == InferenceMode.SWAG_FULL:
                 # TODO(2): Sample parameter values for full SWAG
-                D = torch.concat(list(self.deviation_matricies[name]), dim=0)
-                z_2 = torch.rand_like(param)
-                cov = D.matmul(z_2)
+                cov = torch.zeros_like(param)
 
-                sampled_param = current_mean + var * z_1 / torch.sqrt(2) + cov / (torch.sqrt(2*(self.deviation_matrix_max_rank-1)))
+                for obj in self.deviation_matricies[name]:
+                    #z_2 = torch.randn_like(param)
+                    z_2 = np.random.normal(0,1) # ECE:0.123,
+                    cov += z_2*obj
+
+
+                sampled_param = current_mean + var * z_1 / np.sqrt(2) + cov / (np.sqrt(2*(self.deviation_matrix_max_rank-1)))
 
             # Modify weight value in-place; directly changing self.network
             param.data = sampled_param
