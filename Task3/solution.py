@@ -19,7 +19,7 @@ class BO_algo():
         self.bioavailibility_gp = GaussianProcessRegressor(kernel=Matern(length_scale=2.5))
         self.acessiblity_gp = GaussianProcessRegressor(kernel=Matern(length_scale=2.5) + ConstantKernel(4))
         self.observations = []
-        self.viability_weight = 1
+        self.lagrange_multiplier = 3
 
     def next_recommendation(self):
         """
@@ -86,8 +86,7 @@ class BO_algo():
         viability_pred_mean, viability_pred_std = self.bioavailibility_gp.predict(x, return_std=True)
         accessibility_pred_mean, accessibility_pred_std = self.acessiblity_gp.predict(x, return_std=True)
 
-        return self.viability_weight * (viability_pred_mean + viability_pred_std) \
-                       + (SAFETY_THRESHOLD-accessibility_pred_mean) / accessibility_pred_std
+        return (viability_pred_mean + viability_pred_std) - self.lagrange_multiplier * np.max(accessibility_pred_mean, 0)
 
 
 
