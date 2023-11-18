@@ -2,7 +2,8 @@
 import numpy as np
 from scipy.optimize import fmin_l_bfgs_b
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import Matern, ConstantKernel
+from sklearn.gaussian_process.kernels import Matern, ConstantKernel, WhiteKernel
+
 # import additional ...
 
 
@@ -16,10 +17,12 @@ SAFETY_THRESHOLD = 4  # threshold, upper bound of SA
 class BO_algo():
     def __init__(self):
         """Initializes the algorithm with a parameter configuration."""
-        self.bioavailibility_gp = GaussianProcessRegressor(kernel=Matern(length_scale=2.5))
-        self.acessiblity_gp = GaussianProcessRegressor(kernel=Matern(length_scale=2.5) + ConstantKernel(4))
+        self.bioavailibility_gp = GaussianProcessRegressor(kernel=Matern(length_scale=2.5)+WhiteKernel(0.15))
+
+        self.acessiblity_gp = GaussianProcessRegressor(kernel=Matern(length_scale=2.5) + ConstantKernel(4)+WhiteKernel(0.0001))
+
         self.observations = []
-        self.lagrange_multiplier = 3
+        self.lagrange_multiplier = 10
 
     def next_recommendation(self):
         """
@@ -86,7 +89,8 @@ class BO_algo():
         viability_pred_mean, viability_pred_std = self.bioavailibility_gp.predict(x, return_std=True)
         accessibility_pred_mean, accessibility_pred_std = self.acessiblity_gp.predict(x, return_std=True)
 
-        return (viability_pred_mean + viability_pred_std) - self.lagrange_multiplier * np.max(accessibility_pred_mean, 0)
+        return (viability_pred_mean + viability_pred_std) \
+               - self.lagrange_multiplier * np.max(accessibility_pred_mean, 0)
 
 
 
