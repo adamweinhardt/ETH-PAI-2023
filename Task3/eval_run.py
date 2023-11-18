@@ -4,10 +4,12 @@ with open('log.txt') as f:
     content = f.readlines()
 
 scores = []
+unsafes = []
 for line in content:
     if line.startswith('Score '):
         scores.append(float(line.split(':')[1].strip()))
-
+    elif line.startswith('Unsafe evaluations of problem '):
+        unsafes.append(float(line.split(':')[1].strip()))
 # Calculate the mean of the values
 mean_value = np.mean(scores)
 
@@ -23,5 +25,6 @@ plt.xlabel('Index')
 plt.ylabel('Values')
 plt.legend()
 
+print('average unsafe evaluations', np.mean(unsafes))
 # Show the plot
 plt.show()
