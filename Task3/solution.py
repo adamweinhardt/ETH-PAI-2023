@@ -2,7 +2,7 @@
 import numpy as np
 from scipy.optimize import fmin_l_bfgs_b
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import Matern, ConstantKernel, WhiteKernel, DotProduct
+from sklearn.gaussian_process.kernels import Matern, WhiteKernel, DotProduct
 
 # import additional ...
 
@@ -22,7 +22,7 @@ class BO_algo():
         self.acessiblity_gp = GaussianProcessRegressor(kernel=DotProduct() + Matern(length_scale=2.5) + WhiteKernel(0.0001))
 
         self.observations = []
-        self.lagrange_multiplier = 10
+        self.lagrange_multiplier = 12.5
 
     def next_recommendation(self):
         """
