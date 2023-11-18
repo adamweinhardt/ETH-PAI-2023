@@ -1,0 +1,9 @@
+# Set color cycle
+axes.prop_cycle : (cycler('color', ['k', '453781FF', '29AF7FFF', 'eb8055b2']) + cycler('ls', ['-', '--', ':', '-.']))
+
+# Set default figure size
+figure.figsize : 15, 8
+
+# Font sizes
+font.size : 13
+
