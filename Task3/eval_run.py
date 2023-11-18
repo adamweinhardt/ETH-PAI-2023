@@ -26,5 +26,6 @@ plt.ylabel('Values')
 plt.legend()
 
 print('average unsafe evaluations', np.mean(unsafes))
+print('mean score', np.mean(scores))
 # Show the plot
 plt.show()
