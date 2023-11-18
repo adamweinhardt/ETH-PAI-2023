@@ -2,7 +2,7 @@
 import numpy as np
 from scipy.optimize import fmin_l_bfgs_b
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import Matern, ConstantKernel, WhiteKernel
+from sklearn.gaussian_process.kernels import Matern, ConstantKernel, WhiteKernel, DotProduct
 
 # import additional ...
 
@@ -19,7 +19,7 @@ class BO_algo():
         """Initializes the algorithm with a parameter configuration."""
         self.bioavailibility_gp = GaussianProcessRegressor(kernel=Matern(length_scale=2.5)+WhiteKernel(0.15))
 
-        self.acessiblity_gp = GaussianProcessRegressor(kernel=Matern(length_scale=2.5) + ConstantKernel(4)+WhiteKernel(0.0001))
+        self.acessiblity_gp = GaussianProcessRegressor(kernel=DotProduct() + Matern(length_scale=2.5) + WhiteKernel(0.0001))
 
         self.observations = []
         self.lagrange_multiplier = 10
@@ -114,7 +114,7 @@ class BO_algo():
         for structure, obj_fn, sa in self.observations:
             structures.append(structure)
             obj_fn_values.append(obj_fn)
-            sas.append(sa)
+            sas.append(sa-4)
 
 
         self.bioavailibility_gp.fit(structures, obj_fn_values)
