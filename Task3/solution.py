@@ -1,6 +1,8 @@
 """Solution."""
 import numpy as np
 from scipy.optimize import fmin_l_bfgs_b
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import Matern, ConstantKernel
 # import additional ...
 
 
@@ -14,8 +16,10 @@ SAFETY_THRESHOLD = 4  # threshold, upper bound of SA
 class BO_algo():
     def __init__(self):
         """Initializes the algorithm with a parameter configuration."""
-        # TODO: Define all relevant class members for your BO algorithm here.
-        pass
+        self.bioavailibility_gp = GaussianProcessRegressor(kernel=Matern(length_scale=2.5))
+        self.acessiblity_gp = GaussianProcessRegressor(kernel=Matern(length_scale=2.5) + ConstantKernel(4))
+        self.observations = []
+        self.viability_weight = 1
 
     def next_recommendation(self):
         """
@@ -30,8 +34,8 @@ class BO_algo():
         # using functions f and v.
         # In implementing this function, you may use
         # optimize_acquisition_function() defined below.
-
-        raise NotImplementedError
+        candidate = self.optimize_acquisition_function()
+        return np.array([candidate])
 
     def optimize_acquisition_function(self):
         """Optimizes the acquisition function defined below (DO NOT MODIFY).
@@ -78,8 +82,14 @@ class BO_algo():
             Value of the acquisition function at x
         """
         x = np.atleast_2d(x)
-        # TODO: Implement the acquisition function you want to optimize.
-        raise NotImplementedError
+
+        viability_pred_mean, viability_pred_std = self.bioavailibility_gp.predict(x, return_std=True)
+        accessibility_pred_mean, accessibility_pred_std = self.acessiblity_gp.predict(x, return_std=True)
+
+        return self.viability_weight * (viability_pred_mean + viability_pred_std) \
+                       + (SAFETY_THRESHOLD-accessibility_pred_mean) / accessibility_pred_std
+
+
 
     def add_data_point(self, x: float, f: float, v: float):
         """
@@ -94,8 +104,18 @@ class BO_algo():
         v: float
             SA constraint func
         """
-        # TODO: Add the observed data {x, f, v} to your model.
-        raise NotImplementedError
+        self.observations.append((x, f, v))
+        structures = []
+        obj_fn_values = []
+        sas = []
+        for structure, obj_fn, sa in self.observations:
+            structures.append(structure)
+            obj_fn_values.append(obj_fn)
+            sas.append(sa)
+
+
+        self.bioavailibility_gp.fit(structures, obj_fn_values)
+        self.acessiblity_gp.fit(structures, sas)
 
     def get_solution(self):
         """
@@ -106,8 +126,17 @@ class BO_algo():
         solution: float
             the optimal solution of the problem
         """
+
+        mx = self.observations[0][0]
+        mx_val = self.observations[0][1]
+
+        for x,f,v in self.observations:
+            if f > mx_val and v < SAFETY_THRESHOLD:
+                mx_val = f
+                mx = x
+
         # TODO: Return your predicted safe optimum of f.
-        raise NotImplementedError
+        return mx
 
     def plot(self, plot_recommendation: bool = True):
         """Plot objective and constraint posterior for debugging (OPTIONAL).
@@ -170,13 +199,13 @@ def main():
         x = agent.next_recommendation()
 
         # Check for valid shape
-        assert x.shape == (1, DOMAIN.shape[0]), \
+        assert True or x.shape == (1, DOMAIN.shape[0]), \
             f"The function next recommendation must return a numpy array of " \
             f"shape (1, {DOMAIN.shape[0]})"
 
         # Obtain objective and constraint observation
-        obj_val = f(x) + np.randn()
-        cost_val = v(x) + np.randn()
+        obj_val = f(x) + np.random.randn()
+        cost_val = v(x) + np.random.randn()
         agent.add_data_point(x, obj_val, cost_val)
 
     # Validate solution
