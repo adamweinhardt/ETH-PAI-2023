@@ -2,6 +2,7 @@ import torch
 import torch.optim as optim
 from torch.distributions import Normal
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 from gym.wrappers.monitoring.video_recorder import VideoRecorder
 import warnings
@@ -23,14 +24,39 @@ class NeuralNetwork(nn.Module):
         # TODO: Implement this function which should define a neural network 
         # with a variable number of hidden layers and hidden units.
         # Here you should define layers which your network will use.
+        self.input_layer = nn.Linear(input_dim, hidden_size)
+
+        self.hidden_layers = nn.ModuleList()
+        for _ in range(hidden_layers):
+            self.hidden_layers.append(nn.Linear(hidden_size, hidden_size))
+
+        self.output_layer = nn.Linear(hidden_size, output_dim)
+
+        # Activation function
+        if activation == 'relu':
+            self.activation = F.relu
+        elif activation == 'tanh':
+            self.activation = torch.tanh
+        elif activation == 'sigmoid':
+            self.activation = torch.sigmoid
+        else:
+            raise ValueError("Unsupported activation function. Choose from 'relu', 'tanh', or 'sigmoid'.")
 
     def forward(self, s: torch.Tensor) -> torch.Tensor:
         # TODO: Implement the forward pass for the neural network you have defined.
-        pass
+        x = self.activation(self.input_layer(s))
+
+        for layer in self.hidden_layers:
+            x = self.activation(layer(x))
+
+        output = self.activation(self.output_layer(x))
+
+        return output
+
     
 class Actor:
     def __init__(self,hidden_size: int, hidden_layers: int, actor_lr: float,
-                state_dim: int = 3, action_dim: int = 1, device: torch.device = torch.device('cpu')):
+                state_dim: int = 3, action_dim: int = 1, device: torch.device = torch.device('cpu'), activation_function: str = 'relu'):
         super(Actor, self).__init__()
 
         self.hidden_size = hidden_size
@@ -43,13 +69,16 @@ class Actor:
         self.LOG_STD_MAX = 2
         self.setup_actor()
 
+        #new:
+        self.activitaion_function = activation_function
+
     def setup_actor(self):
         '''
         This function sets up the actor network in the Actor class.
         '''
         # TODO: Implement this function which sets up the actor network. 
         # Take a look at the NeuralNetwork class in utils.py. 
-        pass
+        self.actor = NeuralNetwork(self.state_dim, self.action_dim, self.hidden_size, self.hidden_layers, self.activitaion_function)
 
     def clamp_log_std(self, log_std: torch.Tensor) -> torch.Tensor:
         '''
@@ -80,9 +109,8 @@ class Actor:
 
 
 class Critic:
-    def __init__(self, hidden_size: int, 
-                 hidden_layers: int, critic_lr: int, state_dim: int = 3, 
-                    action_dim: int = 1,device: torch.device = torch.device('cpu')):
+    def __init__(self, hidden_size: int, hidden_layers: int, critic_lr: int, state_dim: int = 3, 
+                    action_dim: int = 1,device: torch.device = torch.device('cpu'), activation_function: str = 'relu'):
         super(Critic, self).__init__()
         self.hidden_size = hidden_size
         self.hidden_layers = hidden_layers
@@ -92,10 +120,16 @@ class Critic:
         self.device = device
         self.setup_critic()
 
+        #new:
+        self.activitaion_function = activation_function
+
     def setup_critic(self):
         # TODO: Implement this function which sets up the critic(s). Take a look at the NeuralNetwork 
         # class in utils.py. Note that you can have MULTIPLE critic networks in this class.
-        pass
+
+        self.critic_1 = NeuralNetwork(self.state_dim + self.action_dim, 1, self.hidden_size, self.hidden_layers, self.activitaion_function)
+
+        self.critic_2 = NeuralNetwork(self.state_dim + self.action_dim, 1, self.hidden_size, self.hidden_layers, self.activitaion_function)
 
 class TrainableParameter:
     '''
