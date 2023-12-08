@@ -13,6 +13,8 @@ from utils import ReplayBuffer, get_env, run_episode
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
+torch.set_default_device('cpu')
+
 class NeuralNetwork(nn.Module):
     '''
     This class implements a neural network with a variable number of hidden layers and hidden units.
@@ -57,7 +59,7 @@ class NeuralNetwork(nn.Module):
 
 class Actor():
     def __init__(self,hidden_size: int, hidden_layers_num: int, actor_lr: float,
-                state_dim: int = 3, action_dim: int = 1, device: torch.device = torch.device('cpu'), activation_function: str = 'relu'):
+                state_dim: int = 3, action_dim: int = 1, device: torch.device = torch.device('cpu')):
         super(Actor, self).__init__()
 
         self.hidden_size = hidden_size
@@ -204,9 +206,9 @@ class Agent:
         # TODO: Setup off-policy agent with policy and critic classes.
         # Feel free to instantiate any other parameters you feel you might need.
         critic_params = {
-            'hidden_size':2,
-            'hidden_layers_num': 16,
-            'critic_lr': 0.0005,
+            'hidden_size': 128,
+            'hidden_layers_num': 4,
+            'critic_lr': 0.005,
             'state_dim':self.state_dim,
             'action_dim': self.action_dim
         }
@@ -217,9 +219,9 @@ class Agent:
             **critic_params
         )
         self.actor = Actor(
-            hidden_size=3,
-            hidden_layers_num=16,
-            actor_lr=0.0005,
+            hidden_size=128,
+            hidden_layers_num=4,
+            actor_lr=0.005,
             action_dim=self.action_dim,
             state_dim=self.state_dim
         )
@@ -245,7 +247,7 @@ class Agent:
         return action
 
     @staticmethod
-    def run_gradient_update_step(object: Union[Actor, Critic], loss: torch.Tensor, retain_graph=False):
+    def run_gradient_update_step(object: Union[Actor, Critic], loss: torch.Tensor):
         '''
         This function takes in a object containing trainable parameters and an optimizer, 
         and using a given loss, runs one step of gradient update. If you set up trainable parameters 
@@ -253,7 +255,7 @@ class Agent:
         :param object: object containing trainable parameters and an optimizer
         '''
         object.optimizer.zero_grad()
-        loss.mean().backward(retain_graph=False)
+        loss.mean().backward()
         object.optimizer.step()
 
     def critic_target_update(self, base_net: NeuralNetwork, target_net: NeuralNetwork, 
@@ -307,7 +309,7 @@ class Agent:
         critic_loss = nn.MSELoss()(critic_value, target_value)
 
         self.run_gradient_update_step(self.critic1,critic_loss)
-        self.critic_target_update(self.critic1.nn, self.critic2.nn,tau=0.005, soft_update=True)
+        self.critic_target_update(self.critic1.nn, self.critic2.nn,tau=0.2, soft_update=True)
 
         entropy = 0.5 * torch.log(torch.abs(2 * torch.pi * torch.e * pred_log_std)).sum()
         actor_loss = torch.mean(entropy - critic_value.detach())
