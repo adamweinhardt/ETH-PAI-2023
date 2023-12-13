@@ -1,3 +1,7 @@
+import json
+from collections import defaultdict
+import matplotlib.pyplot as plt
+
 import torch
 import torch.optim as optim
 from scipy.stats import norm
@@ -17,7 +21,7 @@ from utils import ReplayBuffer, get_env, run_episode
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
-torch.set_default_device('cpu')
+torch.set_default_device('mps')
 ADAM_LR = 0.001
 
 class NeuralNetwork(nn.Module):
@@ -49,7 +53,9 @@ class NeuralNetwork(nn.Module):
         elif output_activation == 'sigmoid':
             self.output_activation = torch.sigmoid
         elif output_activation == 'linear':
-            self.output_activation = lambda x: x.clone()
+            self.output_activation = lambda x: x
+        elif output_activation == 'negative_relu':
+            self.output_activation = lambda x: F.relu(x)*-1
         else:
             raise ValueError("Unsupported activation function. Choose from 'relu', 'tanh', or 'sigmoid'.")
 
@@ -64,7 +70,7 @@ class NeuralNetwork(nn.Module):
 
 class Actor():
     def __init__(self, hidden_size: int, hidden_layers_num: int, actor_lr: float,
-                 state_dim: int = 3, action_dim: int = 1, device: torch.device = torch.device('cpu')):
+                 state_dim: int = 3, action_dim: int = 1, device: torch.device = torch.device('mps')):
         super(Actor, self).__init__()
 
         self.hidden_size = hidden_size
@@ -143,7 +149,7 @@ class Actor():
 class Critic:
 
     def __init__(self, hidden_size: int, hidden_layers_num: int, critic_lr: int, state_dim: int = 3,
-                 action_dim: int = 1, device: torch.device = torch.device('cpu')):
+                 action_dim: int = 1, device: torch.device = torch.device('mps')):
         super(Critic, self).__init__()
         self.hidden_size = hidden_size
         self.hidden_layers_num = hidden_layers_num
@@ -160,14 +166,14 @@ class Critic:
                                 output_dim=1,
                                 hidden_layers=self.hidden_layers_num,
                                 hidden_size=self.hidden_size,
-                                output_activation='relu'
+                                output_activation='negative_relu'
                                 )
 
         self.optimizer = Adam(params=self.nn.parameters(), lr=self.critic_lr)
 
     def pred_reward(self, state: np.array, action: np.array):
         inp = torch.concat([state, action], dim=-1)
-        return -1 * self.nn.forward(inp)
+        return self.nn.forward(inp)
 
 
 class TrainableParameter:
@@ -177,7 +183,7 @@ class TrainableParameter:
     '''
 
     def __init__(self, init_param: float, lr_param: float,
-                 train_param: bool, device: torch.device = torch.device('cpu')):
+                 train_param: bool, device: torch.device = torch.device('mps')):
         self.log_param = torch.tensor(np.log(init_param), requires_grad=train_param, device=device)
         self.optimizer = optim.Adam([self.log_param], lr=lr_param)
 
@@ -198,7 +204,7 @@ class Agent:
         self.max_buffer_size = 100000
         # If your PC possesses a GPU, you should be able to use it for training, 
         # as self.device should be 'cuda' in that case.
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "mps")
         print("Using device: {}".format(self.device))
         self.memory = ReplayBuffer(self.min_buffer_size, self.max_buffer_size, self.device)
 
@@ -208,15 +214,21 @@ class Agent:
         # TODO: Setup off-policy agent with policy and critic classes.
         # Feel free to instantiate any other parameters you feel you might need.
 
+        self.logs = defaultdict(lambda: [])
+
+
         self.DISCOUNT_FACTOR = 0.3
-        self.ALPHA = TrainableParameter(init_param=0.1,lr_param=1e-4,train_param=True)
-        self.alpha_optimizer = Adam([self.ALPHA.get_log_param()], lr=ADAM_LR)
+        #self.ALPHA = TrainableParameter(init_param=0.1,lr_param=1e-4,train_param=True)
+        #self.alpha_optimizer = Adam([self.ALPHA.get_log_param()], lr=ADAM_LR)
+        self.ALPHA_CONST = 0.4
+
         self.TAU = 0.005
         self.target_entropy = -self.action_dim
         self.iteration_idx = 0
+
         critic_params = {
             'hidden_size': 4,
-            'hidden_layers_num': 4,
+            'hidden_layers_num': 64,
             'critic_lr': 0.005,
             'state_dim': self.state_dim,
             'action_dim': self.action_dim
@@ -228,16 +240,23 @@ class Agent:
             **critic_params
         )
 
-        self.critic1_stabilizer = Critic(
-            **critic_params
-        )
+        value_params = {
+            'input_dim': self.state_dim,
+            'output_dim': 1,
+            'hidden_size': 4,
+            'hidden_layers': 64,
+            'output_activation': 'negative_relu'
+        }
 
-        self.critic2_stabilizer = Critic(
-            **critic_params
-        )
+        self.value_network = NeuralNetwork(**value_params)
+
+        self.value_network_trailing = NeuralNetwork(**value_params)
+
+        self.value_optimizer = Adam(params= self.value_network.parameters(), lr=0.005)
+
         self.actor = Actor(
             hidden_size=4,
-            hidden_layers_num=4,
+            hidden_layers_num=64,
             actor_lr=0.005,
             action_dim=self.action_dim,
             state_dim=self.state_dim
@@ -256,14 +275,13 @@ class Agent:
         action = output[0]
         action = torch.clamp(action,-1,1)
 
-        action = action.detach().numpy()
-
+        action = action.cpu().detach().numpy()
         #assert action.shape == (1,), 'Incorrect action shape.'
         assert isinstance(action, np.ndarray), 'Action dtype must be np.ndarray'
         return action
 
     @staticmethod
-    def run_gradient_update_step(object: Union[Actor, Critic], loss: torch.Tensor):
+    def run_gradient_update_step(object: Union[Actor, Critic], loss: torch.Tensor, retain_graph: bool):
         '''
         This function takes in a object containing trainable parameters and an optimizer, 
         and using a given loss, runs one step of gradient update. If you set up trainable parameters 
@@ -271,7 +289,7 @@ class Agent:
         :param object: object containing trainable parameters and an optimizer
         '''
         object.optimizer.zero_grad()
-        loss.mean().backward(retain_graph=True)
+        loss.mean().backward(retain_graph=retain_graph)
         object.optimizer.step()
 
     def critic_target_update(self, base_net: NeuralNetwork, target_net: NeuralNetwork,
@@ -305,78 +323,107 @@ class Agent:
         s_batch, a_batch, r_batch, s_prime_batch = batch
         # TODO: Implement Critic(s) update here.
 
-        #for state, action, reward ,sprime in zip(s_batch, a_batch, r_batch, s_prime_batch):
         state, action, reward, sprime = s_batch, a_batch, r_batch, s_prime_batch
-        next_action, next_action_log_prob = self.actor.get_action_and_log_prob(s_prime_batch, deterministic=False)
 
-        target_q_min = torch.min(
-            self.critic1_stabilizer.pred_reward(s_prime_batch, next_action),
-            self.critic2_stabilizer.pred_reward(s_prime_batch, next_action)
-        )
+        pred_action, pred_log_prob = self.actor.get_action_and_log_prob(state, deterministic=False)
 
+        q1_on_pred = self.critic1.pred_reward(state, pred_action)
+        q2_on_pred = self.critic2.pred_reward(state, pred_action)
+        q_min = torch.min(q1_on_pred, q2_on_pred)
 
-        target_q = reward + self.DISCOUNT_FACTOR * (target_q_min - self.ALPHA.get_param().detach() * next_action_log_prob)
+        #TODO detach?
+        #Value network update
+        value_network_output = self.value_network.forward(state)
+        target_value = q_min.detach() - self.ALPHA_CONST * pred_log_prob.detach()
+        value_network_loss = F.mse_loss(value_network_output, target_value)
+        print('Value network', target_value.mean(), 'loss', value_network_loss)
+        self.logs['value_network_loss'].append(value_network_loss.cpu().detach().item())
+        #critics update
+        with torch.no_grad():
+            q_hat = reward + self.DISCOUNT_FACTOR * self.value_network_trailing(sprime)
+        q1_on_given = self.critic1.pred_reward(state, action)
+        q2_on_given = self.critic2.pred_reward(state, action)
+        q1_loss = F.mse_loss(q1_on_given, q_hat)
+        q2_loss = F.mse_loss(q2_on_given, q_hat)
+        print('Critic1 mean preds', q1_on_pred.mean(), q1_on_given.mean(), 'loss', q1_loss)
+        print('Critic2 mean preds', q2_on_pred.mean(), q2_on_given.mean(), 'loss', q2_loss)
+        self.logs['critic1_loss'].append(q1_loss.cpu().detach().item())
+        self.logs['critic2_loss'].append(q2_loss.cpu().detach().item())
 
-        current_critic1_value = self.critic1.pred_reward(state, action)
-        current_critic2_value = self.critic2.pred_reward(state, action)
+        #actor update
+        actor_loss = (self.ALPHA_CONST * pred_log_prob - q_min.detach()).mean()
+        print('Actor mean pred', pred_action.mean(), pred_log_prob.mean(), 'loss', actor_loss)
+        self.logs['actor_loss'].append(q2_loss.cpu().detach().item())
+        #updates:
+        self.run_gradient_update_step(self.actor, actor_loss, retain_graph=False)
 
-        critic_loss_1 = nn.functional.mse_loss(current_critic1_value, target_q)
-        critic_loss_2 = nn.functional.mse_loss(current_critic2_value, target_q)
-        self.run_gradient_update_step(self.critic1, critic_loss_1)
-        self.run_gradient_update_step(self.critic2, critic_loss_2)
+        self.value_optimizer.zero_grad()
+        value_network_loss.backward(retain_graph=False)
+        self.value_optimizer.step()
 
-        if self.iteration_idx % 2 == 0:
+        self.run_gradient_update_step(self.critic1, q1_loss, retain_graph=False)
+        self.run_gradient_update_step(self.critic2, q2_loss, retain_graph=False)
 
-            self.critic_target_update(self.critic1.nn, self.critic1_stabilizer.nn, self.TAU, soft_update=True)
-            self.critic_target_update(self.critic2.nn, self.critic2_stabilizer.nn, self.TAU, soft_update=True)
-
-        if self.iteration_idx % 1 == 0:
-            pred_state_action, log_prob = self.actor.get_action_and_log_prob(state, deterministic=False)
-            actor_loss = (self.ALPHA.get_param() * log_prob - target_q_min).mean()
-            self.run_gradient_update_step(self.actor, actor_loss)
-
-            self.alpha_optimizer.zero_grad()
-            alpha_loss = (self.ALPHA.get_param() * (-log_prob - self.target_entropy).detach()).mean()
-            alpha_loss.backward()
-            self.alpha_optimizer.step()
+        #trail value network
+        self.critic_target_update(self.value_network_trailing, self.value_network, tau=self.TAU, soft_update=True)
 
         self.iteration_idx += 1
 # This main function is provided here to enable some basic testing. 
 # ANY changes here WON'T take any effect while grading.
+def plot_logs(log_dict):
+
+    # Plotting
+    plt.figure(figsize=(10, 6))
+    for key, values in log_dict.items():
+        plt.plot(values, label=key)
+
+    plt.title("Losses Over Time")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss Value")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig("logs.png")
+    plt.show()
+
+
 if __name__ == '__main__':
+    try:
+        TRAIN_EPISODES = 50
+        TEST_EPISODES = 300
 
-    TRAIN_EPISODES = 50
-    TEST_EPISODES = 300
+        # You may set the save_video param to output the video of one of the evalution episodes, or
+        # you can disable console printing during training and testing by setting verbose to False.
+        save_video = False
+        verbose = True
 
-    # You may set the save_video param to output the video of one of the evalution episodes, or 
-    # you can disable console printing during training and testing by setting verbose to False.
-    save_video = False
-    verbose = True
+        agent = Agent()
+        env = get_env(g=10.0, train=True)
 
-    agent = Agent()
-    env = get_env(g=10.0, train=True)
+        for EP in range(TRAIN_EPISODES):
+            run_episode(env, agent, None, verbose, train=True)
 
-    for EP in range(TRAIN_EPISODES):
-        run_episode(env, agent, None, verbose, train=True)
+        if verbose:
+            print('\n')
 
-    if verbose:
-        print('\n')
+        test_returns = []
+        env = get_env(g=10.0, train=False)
 
-    test_returns = []
-    env = get_env(g=10.0, train=False)
+        if save_video:
+            video_rec = VideoRecorder(env, "pendulum_episode.mp4")
 
-    if save_video:
-        video_rec = VideoRecorder(env, "pendulum_episode.mp4")
+        for EP in range(TEST_EPISODES):
+            rec = video_rec if (save_video and EP == TEST_EPISODES - 1) else None
+            with torch.no_grad():
+                episode_return = run_episode(env, agent, rec, verbose, train=False)
+            test_returns.append(episode_return)
 
-    for EP in range(TEST_EPISODES):
-        rec = video_rec if (save_video and EP == TEST_EPISODES - 1) else None
-        with torch.no_grad():
-            episode_return = run_episode(env, agent, rec, verbose, train=False)
-        test_returns.append(episode_return)
+        avg_test_return = np.mean(np.array(test_returns))
 
-    avg_test_return = np.mean(np.array(test_returns))
+        print("\n AVG_TEST_RETURN:{:.1f} \n".format(avg_test_return))
 
-    print("\n AVG_TEST_RETURN:{:.1f} \n".format(avg_test_return))
-
-    if save_video:
-        video_rec.close()
+        if save_video:
+            video_rec.close()
+    finally:
+        with open('logs.json','w+') as f:
+            json.dump(agent.logs,f)
+        plot_logs(agent.logs)
