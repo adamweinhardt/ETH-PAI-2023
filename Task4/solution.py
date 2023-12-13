@@ -21,7 +21,7 @@ from utils import ReplayBuffer, get_env, run_episode
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
-torch.set_default_device('mps')
+torch.set_default_device('cpu')
 ADAM_LR = 0.001
 
 class NeuralNetwork(nn.Module):
@@ -70,7 +70,7 @@ class NeuralNetwork(nn.Module):
 
 class Actor():
     def __init__(self, hidden_size: int, hidden_layers_num: int, actor_lr: float,
-                 state_dim: int = 3, action_dim: int = 1, device: torch.device = torch.device('mps')):
+                 state_dim: int = 3, action_dim: int = 1, device: torch.device = torch.device('cpu')):
         super(Actor, self).__init__()
 
         self.hidden_size = hidden_size
@@ -149,7 +149,7 @@ class Actor():
 class Critic:
 
     def __init__(self, hidden_size: int, hidden_layers_num: int, critic_lr: int, state_dim: int = 3,
-                 action_dim: int = 1, device: torch.device = torch.device('mps')):
+                 action_dim: int = 1, device: torch.device = torch.device('cpu')):
         super(Critic, self).__init__()
         self.hidden_size = hidden_size
         self.hidden_layers_num = hidden_layers_num
@@ -183,7 +183,7 @@ class TrainableParameter:
     '''
 
     def __init__(self, init_param: float, lr_param: float,
-                 train_param: bool, device: torch.device = torch.device('mps')):
+                 train_param: bool, device: torch.device = torch.device('cpu')):
         self.log_param = torch.tensor(np.log(init_param), requires_grad=train_param, device=device)
         self.optimizer = optim.Adam([self.log_param], lr=lr_param)
 
@@ -204,7 +204,7 @@ class Agent:
         self.max_buffer_size = 100000
         # If your PC possesses a GPU, you should be able to use it for training, 
         # as self.device should be 'cuda' in that case.
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "mps")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print("Using device: {}".format(self.device))
         self.memory = ReplayBuffer(self.min_buffer_size, self.max_buffer_size, self.device)
 
@@ -215,12 +215,12 @@ class Agent:
         # Feel free to instantiate any other parameters you feel you might need.
 
         self.logs = defaultdict(lambda: [])
-
+        self.verbose = False
 
         self.DISCOUNT_FACTOR = 0.3
         #self.ALPHA = TrainableParameter(init_param=0.1,lr_param=1e-4,train_param=True)
         #self.alpha_optimizer = Adam([self.ALPHA.get_log_param()], lr=ADAM_LR)
-        self.ALPHA_CONST = 0.4
+        self.ALPHA_CONST = 1
 
         self.TAU = 0.005
         self.target_entropy = -self.action_dim
@@ -228,7 +228,7 @@ class Agent:
 
         critic_params = {
             'hidden_size': 4,
-            'hidden_layers_num': 64,
+            'hidden_layers_num': 512,
             'critic_lr': 0.005,
             'state_dim': self.state_dim,
             'action_dim': self.action_dim
@@ -244,7 +244,7 @@ class Agent:
             'input_dim': self.state_dim,
             'output_dim': 1,
             'hidden_size': 4,
-            'hidden_layers': 64,
+            'hidden_layers': 512,
             'output_activation': 'negative_relu'
         }
 
@@ -256,7 +256,7 @@ class Agent:
 
         self.actor = Actor(
             hidden_size=4,
-            hidden_layers_num=64,
+            hidden_layers_num=512,
             actor_lr=0.005,
             action_dim=self.action_dim,
             state_dim=self.state_dim
@@ -336,7 +336,8 @@ class Agent:
         value_network_output = self.value_network.forward(state)
         target_value = q_min.detach() - self.ALPHA_CONST * pred_log_prob.detach()
         value_network_loss = F.mse_loss(value_network_output, target_value)
-        print('Value network', target_value.mean(), 'loss', value_network_loss)
+        if self.verbose:
+            print('Value network', target_value.mean(), 'loss', value_network_loss)
         self.logs['value_network_loss'].append(value_network_loss.cpu().detach().item())
         #critics update
         with torch.no_grad():
@@ -345,14 +346,16 @@ class Agent:
         q2_on_given = self.critic2.pred_reward(state, action)
         q1_loss = F.mse_loss(q1_on_given, q_hat)
         q2_loss = F.mse_loss(q2_on_given, q_hat)
-        print('Critic1 mean preds', q1_on_pred.mean(), q1_on_given.mean(), 'loss', q1_loss)
-        print('Critic2 mean preds', q2_on_pred.mean(), q2_on_given.mean(), 'loss', q2_loss)
+        if self.verbose:
+            print('Critic1 mean preds', q1_on_pred.mean(), q1_on_given.mean(), 'loss', q1_loss)
+            print('Critic2 mean preds', q2_on_pred.mean(), q2_on_given.mean(), 'loss', q2_loss)
         self.logs['critic1_loss'].append(q1_loss.cpu().detach().item())
         self.logs['critic2_loss'].append(q2_loss.cpu().detach().item())
 
         #actor update
         actor_loss = (self.ALPHA_CONST * pred_log_prob - q_min.detach()).mean()
-        print('Actor mean pred', pred_action.mean(), pred_log_prob.mean(), 'loss', actor_loss)
+        if self.verbose:
+            print('Actor mean pred', pred_action.mean(), pred_log_prob.mean(), 'loss', actor_loss)
         self.logs['actor_loss'].append(q2_loss.cpu().detach().item())
         #updates:
         self.run_gradient_update_step(self.actor, actor_loss, retain_graph=False)
