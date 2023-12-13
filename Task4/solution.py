@@ -59,9 +59,7 @@ class NeuralNetwork(nn.Module):
         for layer in self.hidden_layers:
             x = F.relu(layer(x), inplace=False)
 
-        output = self.output_activation(self.output_layer(x))
-
-        return output
+        return self.output_layer(x)
 
 
 class Actor():
@@ -80,23 +78,17 @@ class Actor():
         self.setup_actor()
 
     def setup_actor(self):
-        self.network_backbone = NeuralNetwork(
+        self.nn = NeuralNetwork(
             input_dim=self.state_dim,
-            output_dim=self.hidden_size,
-            hidden_size=self.hidden_size - 1,
+            output_dim=self.action_dim*2,
+            hidden_size=self.hidden_size,
             hidden_layers=self.hidden_layers_num,
             output_activation='linear'
         )
 
-        self.mean_layer = nn.Linear(self.hidden_size, self.action_dim)
-        self.std = nn.Linear(self.hidden_size, self.action_dim)
-        self.std_relu = nn.ReLU()
-
         self.optimizer = Adam(
-            params=list(self.network_backbone.parameters())
-                   + list(self.mean_layer.parameters())
-                   + list(self.std.parameters()),
-            lr=ADAM_LR
+            params=list(self.nn.parameters()),
+            lr=self.actor_lr
         )
 
         '''
@@ -124,19 +116,21 @@ class Actor():
         :param log_prob: log_probability of the the action.
         '''
         assert state.shape == (3,) or state.shape[1] == self.state_dim, 'State passed to this method has a wrong shape'
-        actor_output = self.network_backbone.forward(state)
+        actor_output = self.nn.forward(state)
 
-        std = self.std(actor_output)
-        std = self.std_relu(std)
-        std = torch.add(std, other=1, alpha=1e-4)
-        action = self.mean_layer(actor_output)
-        action = F.tanh(action)
+        mean = actor_output[:, 0]
+        std = actor_output[:, 1]
 
-        distribution = Normal(action, std)
+        mean = torch.unsqueeze(mean, -1)
+        std = torch.unsqueeze(std, -1)
+
+        std = F.relu(std)+1e-4
+        distribution = Normal(mean, std)
         drawn_sample = distribution.rsample()
-        drawn_sample = torch.clamp(drawn_sample,-1,1)
+        drawn_sample = torch.clamp(drawn_sample, -1, 1)
 
         log_prob = distribution.log_prob(drawn_sample)
+        log_prob = self.clamp_log_std(log_prob)
         # TODO: Implement this function which returns an action and its log probability.
         # If working with stochastic policies, make sure that its log_std are clamped 
         # using the clamp_log_std function.
@@ -169,14 +163,13 @@ class Critic:
                                 output_activation='relu'
                                 )
 
-        self.optimizer = Adam(params=self.nn.parameters(), lr=ADAM_LR)
+        self.optimizer = Adam(params=self.nn.parameters(), lr=self.critic_lr)
 
     def pred_reward(self, state: np.array, action: np.array):
-        inp = torch.concat([torch.tensor(state), torch.tensor(action)], dim=-1)
+        inp = torch.concat([state, action], dim=-1)
         return -1 * self.nn.forward(inp)
 
 
-# TODO
 class TrainableParameter:
     '''
     This class could be used to define a trainable parameter in your method. You could find it 
@@ -218,12 +211,12 @@ class Agent:
         self.DISCOUNT_FACTOR = 0.3
         self.ALPHA = TrainableParameter(init_param=0.1,lr_param=1e-4,train_param=True)
         self.alpha_optimizer = Adam([self.ALPHA.get_log_param()], lr=ADAM_LR)
-        self.TAU = 0.1
+        self.TAU = 0.005
         self.target_entropy = -self.action_dim
         self.iteration_idx = 0
         critic_params = {
-            'hidden_size': 1024,
-            'hidden_layers_num': 3,
+            'hidden_size': 4,
+            'hidden_layers_num': 4,
             'critic_lr': 0.005,
             'state_dim': self.state_dim,
             'action_dim': self.action_dim
@@ -243,8 +236,8 @@ class Agent:
             **critic_params
         )
         self.actor = Actor(
-            hidden_size=1024,
-            hidden_layers_num=3,
+            hidden_size=4,
+            hidden_layers_num=4,
             actor_lr=0.005,
             action_dim=self.action_dim,
             state_dim=self.state_dim
@@ -258,8 +251,13 @@ class Agent:
         :return: np.ndarray,, action to apply on the environment, shape (1,)
         """
         # TODO: Implement a function that returns an action from the policy for the state s.
-        action, _ = self.actor.get_action_and_log_prob(state=torch.Tensor(s), deterministic=False)
+
+        output = self.actor.nn.forward(torch.tensor(s))
+        action = output[0]
+        action = torch.clamp(action,-1,1)
+
         action = action.detach().numpy()
+
         #assert action.shape == (1,), 'Incorrect action shape.'
         assert isinstance(action, np.ndarray), 'Action dtype must be np.ndarray'
         return action
@@ -318,13 +316,12 @@ class Agent:
 
 
         target_q = reward + self.DISCOUNT_FACTOR * (target_q_min - self.ALPHA.get_param().detach() * next_action_log_prob)
-        target_q = target_q.detach()
+
         current_critic1_value = self.critic1.pred_reward(state, action)
         current_critic2_value = self.critic2.pred_reward(state, action)
 
         critic_loss_1 = nn.functional.mse_loss(current_critic1_value, target_q)
         critic_loss_2 = nn.functional.mse_loss(current_critic2_value, target_q)
-
         self.run_gradient_update_step(self.critic1, critic_loss_1)
         self.run_gradient_update_step(self.critic2, critic_loss_2)
 
@@ -336,7 +333,6 @@ class Agent:
         if self.iteration_idx % 1 == 0:
             pred_state_action, log_prob = self.actor.get_action_and_log_prob(state, deterministic=False)
             actor_loss = (self.ALPHA.get_param() * log_prob - target_q_min).mean()
-
             self.run_gradient_update_step(self.actor, actor_loss)
 
             self.alpha_optimizer.zero_grad()
