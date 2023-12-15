@@ -192,7 +192,7 @@ class Agent:
         self.max_buffer_size = 100000
         # If your PC possesses a GPU, you should be able to use it for training, 
         # as self.device should be 'cuda' in that case.
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cpu")
         print("Using device: {}".format(self.device))
         self.memory = ReplayBuffer(self.min_buffer_size, self.max_buffer_size, self.device)
 
@@ -206,17 +206,16 @@ class Agent:
         self.verbose = False
 
         self.DISCOUNT_FACTOR = 0.99
-        self.ALPHA = TrainableParameter(init_param=0.1,lr_param=1e-3,train_param=True)
+        self.ALPHA = TrainableParameter(init_param=0.1,lr_param=3e-3,train_param=True)
         self.alpha_optimizer = optim.NAdam([self.ALPHA.get_log_param()], lr=1e-3)
-        self.ALPHA_CONST = 0.2
 
-        self.TAU = 0.005
+        self.TAU = 0.1
         self.iteration_idx = 0
 
         critic_params = {
             'hidden_size': 256,
-            'hidden_layers_num': 3,
-            'critic_lr': 1e-4,
+            'hidden_layers_num': 4,
+            'critic_lr': 3e-3,
             'state_dim': self.state_dim,
             'action_dim': self.action_dim
         }
@@ -237,11 +236,12 @@ class Agent:
 
         self.actor = Actor(
             hidden_size=256,
-            hidden_layers_num=3,
-            actor_lr=3e-4,
+            hidden_layers_num=4,
+            actor_lr=3e-3,
             action_dim=self.action_dim,
             state_dim=self.state_dim
         )
+
         self.policy_frequency = 2
         self.target_network_frequency = 1
 
@@ -386,6 +386,7 @@ if __name__ == '__main__':
         env = get_env(g=10.0, train=True)
 
         for EP in range(TRAIN_EPISODES):
+            print("Training episode: "+str(EP) +'/'+str(TRAIN_EPISODES))
             run_episode(env, agent, None, verbose, train=True)
 
         if verbose:
