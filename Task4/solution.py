@@ -1,11 +1,8 @@
 import json
 from collections import defaultdict
-import matplotlib.pyplot as plt
 
 import torch
 import torch.optim as optim
-from scipy.stats import norm
-from torch.distributions import Normal
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
@@ -22,7 +19,6 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 torch.set_default_device('cpu')
-ADAM_LR = 0.001
 
 class NeuralNetwork(nn.Module):
     '''
@@ -122,28 +118,20 @@ class Actor():
         :param log_prob: log_probability of the the action.
         '''
         assert state.shape == (3,) or state.shape[1] == self.state_dim, 'State passed to this method has a wrong shape'
-        actor_output = self.nn.forward(state)
+        batch_preds = self.nn.forward(state)
+        mean = torch.unsqueeze(batch_preds[:, 0], -1)
+        log_std = torch.unsqueeze(batch_preds[:, 1], -1)
+        log_std = self.clamp_log_std(log_std)
 
-        mean = actor_output[:, 0]
-        std = actor_output[:, 1]
+        std = log_std.exp()
+        normal = torch.distributions.Normal(mean, std)
+        sampled_point = normal.rsample()
+        action = torch.tanh(sampled_point)
+        log_prob = normal.log_prob(sampled_point)
 
-        mean = torch.unsqueeze(mean, -1)
-        std = torch.unsqueeze(std, -1)
-
-        std = F.relu(std)+1e-4
-        distribution = Normal(mean, std)
-        drawn_sample = distribution.rsample()
-        drawn_sample = torch.clamp(drawn_sample, -1, 1)
-
-        log_prob = distribution.log_prob(drawn_sample)
-        log_prob = self.clamp_log_std(log_prob)
-        # TODO: Implement this function which returns an action and its log probability.
-        # If working with stochastic policies, make sure that its log_std are clamped 
-        # using the clamp_log_std function.
-        # TODO undesrtand xd
-        # assert action.shape == (state.shape[0], self.action_dim) and \
-        #    log_prob.shape == (state.shape[0], self.action_dim), 'Incorrect shape for action or log_prob.'
-        return drawn_sample, log_prob
+        log_prob -= torch.log((1 - action.pow(2)) + 1e-6)
+        log_prob = log_prob.sum(0, keepdim=True)
+        return action, log_prob
 
 
 class Critic:
@@ -166,7 +154,7 @@ class Critic:
                                 output_dim=1,
                                 hidden_layers=self.hidden_layers_num,
                                 hidden_size=self.hidden_size,
-                                output_activation='negative_relu'
+                                output_activation='linear'
                                 )
 
         self.optimizer = Adam(params=self.nn.parameters(), lr=self.critic_lr)
@@ -185,7 +173,7 @@ class TrainableParameter:
     def __init__(self, init_param: float, lr_param: float,
                  train_param: bool, device: torch.device = torch.device('cpu')):
         self.log_param = torch.tensor(np.log(init_param), requires_grad=train_param, device=device)
-        self.optimizer = optim.Adam([self.log_param], lr=lr_param)
+        self.optimizer = optim.NAdam([self.log_param], lr=lr_param)
 
     def get_param(self) -> torch.Tensor:
         return torch.exp(self.log_param)
@@ -217,50 +205,45 @@ class Agent:
         self.logs = defaultdict(lambda: [])
         self.verbose = False
 
-        self.DISCOUNT_FACTOR = 0.3
-        #self.ALPHA = TrainableParameter(init_param=0.1,lr_param=1e-4,train_param=True)
-        #self.alpha_optimizer = Adam([self.ALPHA.get_log_param()], lr=ADAM_LR)
-        self.ALPHA_CONST = 1
+        self.DISCOUNT_FACTOR = 0.99
+        self.ALPHA = TrainableParameter(init_param=0.1,lr_param=1e-3,train_param=True)
+        self.alpha_optimizer = optim.NAdam([self.ALPHA.get_log_param()], lr=1e-3)
+        self.ALPHA_CONST = 0.2
 
         self.TAU = 0.005
-        self.target_entropy = -self.action_dim
         self.iteration_idx = 0
 
         critic_params = {
-            'hidden_size': 4,
-            'hidden_layers_num': 512,
-            'critic_lr': 0.005,
+            'hidden_size': 256,
+            'hidden_layers_num': 3,
+            'critic_lr': 1e-4,
             'state_dim': self.state_dim,
             'action_dim': self.action_dim
         }
         self.critic1 = Critic(
             **critic_params
         )
+        self.critic1_target = Critic(**critic_params)
+        self.critic1_target.nn.load_state_dict(self.critic1.nn.state_dict())
+
         self.critic2 = Critic(
             **critic_params
         )
+        self.critic2_target = Critic(**critic_params)
+        self.critic2_target.nn.load_state_dict(self.critic2.nn.state_dict())
 
-        value_params = {
-            'input_dim': self.state_dim,
-            'output_dim': 1,
-            'hidden_size': 4,
-            'hidden_layers': 512,
-            'output_activation': 'negative_relu'
-        }
+        self.critic_optimizer = optim.NAdam(list(self.critic1.nn.parameters()) + list(self.critic2.nn.parameters()), lr=critic_params['critic_lr'])
 
-        self.value_network = NeuralNetwork(**value_params)
-
-        self.value_network_trailing = NeuralNetwork(**value_params)
-
-        self.value_optimizer = Adam(params= self.value_network.parameters(), lr=0.005)
 
         self.actor = Actor(
-            hidden_size=4,
-            hidden_layers_num=512,
-            actor_lr=0.005,
+            hidden_size=256,
+            hidden_layers_num=3,
+            actor_lr=3e-4,
             action_dim=self.action_dim,
             state_dim=self.state_dim
         )
+        self.policy_frequency = 2
+        self.target_network_frequency = 1
 
     def get_action(self, s: np.ndarray, train: bool) -> np.ndarray:
         """
@@ -270,18 +253,21 @@ class Agent:
         :return: np.ndarray,, action to apply on the environment, shape (1,)
         """
         # TODO: Implement a function that returns an action from the policy for the state s.
+        state = torch.tensor(s)
+        is_batch = state.shape != (3,)
+        if not is_batch:
+            state = torch.unsqueeze(state, 0)
+        actions, _ = self.actor.get_action_and_log_prob(state, deterministic=(not train))
 
-        output = self.actor.nn.forward(torch.tensor(s))
-        action = output[0]
-        action = torch.clamp(action,-1,1)
-
-        action = action.cpu().detach().numpy()
+        action = actions.cpu().detach().numpy()
+        if not is_batch:
+            return action[0]
         #assert action.shape == (1,), 'Incorrect action shape.'
         assert isinstance(action, np.ndarray), 'Action dtype must be np.ndarray'
         return action
 
     @staticmethod
-    def run_gradient_update_step(object: Union[Actor, Critic], loss: torch.Tensor, retain_graph: bool):
+    def run_gradient_update_step(object: Union[Actor, Critic], loss: torch.Tensor):
         '''
         This function takes in a object containing trainable parameters and an optimizer, 
         and using a given loss, runs one step of gradient update. If you set up trainable parameters 
@@ -289,7 +275,7 @@ class Agent:
         :param object: object containing trainable parameters and an optimizer
         '''
         object.optimizer.zero_grad()
-        loss.mean().backward(retain_graph=retain_graph)
+        loss.mean().backward()
         object.optimizer.step()
 
     def critic_target_update(self, base_net: NeuralNetwork, target_net: NeuralNetwork,
@@ -314,61 +300,58 @@ class Agent:
         from the replay buffer,and then updates the policy and critic networks 
         using the sampled batch.
         '''
-        # TODO: Implement one step of training for the agent.
         # Hint: You can use the run_gradient_update_step for each policy and critic.
         # Example: self.run_gradient_update_step(self.policy, policy_loss)
 
         # Batch sampling
         batch = self.memory.sample(self.batch_size)
         s_batch, a_batch, r_batch, s_prime_batch = batch
-        # TODO: Implement Critic(s) update here.
 
-        state, action, reward, sprime = s_batch, a_batch, r_batch, s_prime_batch
-
-        pred_action, pred_log_prob = self.actor.get_action_and_log_prob(state, deterministic=False)
-
-        q1_on_pred = self.critic1.pred_reward(state, pred_action)
-        q2_on_pred = self.critic2.pred_reward(state, pred_action)
-        q_min = torch.min(q1_on_pred, q2_on_pred)
-
-        #TODO detach?
-        #Value network update
-        value_network_output = self.value_network.forward(state)
-        target_value = q_min.detach() - self.ALPHA_CONST * pred_log_prob.detach()
-        value_network_loss = F.mse_loss(value_network_output, target_value)
-        if self.verbose:
-            print('Value network', target_value.mean(), 'loss', value_network_loss)
-        self.logs['value_network_loss'].append(value_network_loss.cpu().detach().item())
-        #critics update
         with torch.no_grad():
-            q_hat = reward + self.DISCOUNT_FACTOR * self.value_network_trailing(sprime)
-        q1_on_given = self.critic1.pred_reward(state, action)
-        q2_on_given = self.critic2.pred_reward(state, action)
-        q1_loss = F.mse_loss(q1_on_given, q_hat)
-        q2_loss = F.mse_loss(q2_on_given, q_hat)
-        if self.verbose:
-            print('Critic1 mean preds', q1_on_pred.mean(), q1_on_given.mean(), 'loss', q1_loss)
-            print('Critic2 mean preds', q2_on_pred.mean(), q2_on_given.mean(), 'loss', q2_loss)
-        self.logs['critic1_loss'].append(q1_loss.cpu().detach().item())
-        self.logs['critic2_loss'].append(q2_loss.cpu().detach().item())
+            next_state_actions, next_state_log_ps = self.actor.get_action_and_log_prob(s_prime_batch, deterministic=True)
+            q1_target_predict = self.critic1_target.pred_reward(s_prime_batch, next_state_actions)
+            q2_target_predict = self.critic2_target.pred_reward(s_prime_batch, next_state_actions)
+            q_min = torch.min(q1_target_predict, q2_target_predict)
+            entropy_penalty = self.ALPHA.get_param() * next_state_log_ps
+            q_next_states = q_min - entropy_penalty
+            q_min_value = r_batch.flatten() + (self.DISCOUNT_FACTOR * (q_next_states)).view(-1)
 
-        #actor update
-        actor_loss = (self.ALPHA_CONST * pred_log_prob - q_min.detach()).mean()
-        if self.verbose:
-            print('Actor mean pred', pred_action.mean(), pred_log_prob.mean(), 'loss', actor_loss)
-        self.logs['actor_loss'].append(q2_loss.cpu().detach().item())
-        #updates:
-        self.run_gradient_update_step(self.actor, actor_loss, retain_graph=False)
+        q1_curr_state = self.critic1.pred_reward(s_batch, a_batch).view(-1)
+        q1_loss = F.mse_loss(q1_curr_state, q_min_value)
 
-        self.value_optimizer.zero_grad()
-        value_network_loss.backward(retain_graph=False)
-        self.value_optimizer.step()
+        q2_curr_state = self.critic2.pred_reward(s_batch, a_batch).view(-1)
+        q2_loss = F.mse_loss(q2_curr_state, q_min_value)
 
-        self.run_gradient_update_step(self.critic1, q1_loss, retain_graph=False)
-        self.run_gradient_update_step(self.critic2, q2_loss, retain_graph=False)
+        mutual_loss = q1_loss + q2_loss
+        self.logs['q_loss'].append(mutual_loss.item())
 
-        #trail value network
-        self.critic_target_update(self.value_network_trailing, self.value_network, tau=self.TAU, soft_update=True)
+        # optimize the model
+        self.critic_optimizer.zero_grad()
+        mutual_loss.backward()
+        self.critic_optimizer.step()
+
+        if self.iteration_idx % self.policy_frequency == 0:
+            for _ in range(self.policy_frequency):
+                actions, log_ps = self.actor.get_action_and_log_prob(s_batch, deterministic=True)
+                q1_pred_value = self.critic1.pred_reward(s_batch, actions)
+                q2_pred_value = self.critic2.pred_reward(s_batch, actions)
+                min_q = torch.min(q1_pred_value, q2_pred_value)
+                actor_loss = ((self.ALPHA.get_param() * log_ps) - min_q).mean()
+                self.logs['actor_loss'].append(actor_loss.item())
+                self.run_gradient_update_step(self.actor, actor_loss)
+
+                if hasattr(self, 'ALPHA'):
+                    with torch.no_grad():
+                        _, log_ps = self.actor.get_action_and_log_prob(s_batch, False)
+                    alpha_loss = (-self.ALPHA.get_log_param().exp() * (log_ps + (-self.state_dim))).mean()
+                    self.logs['alpha_loss'].append(actor_loss.item())
+                    self.alpha_optimizer.zero_grad()
+                    alpha_loss.backward()
+                    self.alpha_optimizer.step()
+
+        if self.iteration_idx % self.target_network_frequency == 0:
+            self.critic_target_update(self.critic1.nn, self.critic1_target.nn, soft_update=True, tau=self.TAU)
+            self.critic_target_update(self.critic2.nn, self.critic2_target.nn, soft_update=True, tau=self.TAU)
 
         self.iteration_idx += 1
 # This main function is provided here to enable some basic testing. 
@@ -429,4 +412,4 @@ if __name__ == '__main__':
     finally:
         with open('logs.json','w+') as f:
             json.dump(agent.logs,f)
-        plot_logs(agent.logs)
+        #plot_logs(agent.logs) #add import matplotlib.pyplot as plt for local debug
