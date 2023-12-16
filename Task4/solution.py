@@ -206,16 +206,16 @@ class Agent:
         self.verbose = False
 
         self.DISCOUNT_FACTOR = 0.99
-        self.ALPHA = TrainableParameter(init_param=0.1,lr_param=3e-3,train_param=True)
+        self.ALPHA = TrainableParameter(init_param=0.01,lr_param=1e-3,train_param=True)
         self.alpha_optimizer = optim.NAdam([self.ALPHA.get_log_param()], lr=1e-3)
 
-        self.TAU = 0.1
+        self.TAU = 0.05
         self.iteration_idx = 0
 
         critic_params = {
             'hidden_size': 256,
-            'hidden_layers_num': 4,
-            'critic_lr': 3e-3,
+            'hidden_layers_num': 2,
+            'critic_lr': 1e-3,
             'state_dim': self.state_dim,
             'action_dim': self.action_dim
         }
@@ -236,8 +236,8 @@ class Agent:
 
         self.actor = Actor(
             hidden_size=256,
-            hidden_layers_num=4,
-            actor_lr=3e-3,
+            hidden_layers_num=2,
+            actor_lr=1e-3,
             action_dim=self.action_dim,
             state_dim=self.state_dim
         )
@@ -379,7 +379,7 @@ if __name__ == '__main__':
 
         # You may set the save_video param to output the video of one of the evalution episodes, or
         # you can disable console printing during training and testing by setting verbose to False.
-        save_video = False
+        save_video = True
         verbose = True
 
         agent = Agent()
